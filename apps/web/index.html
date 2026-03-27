@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>Sailbox — Self-hosted PaaS, powered by Kubernetes</title>
+    <meta name="description" content="Deploy apps, databases, and cron jobs to your own servers with real Kubernetes under the hood. From a single node to a full cluster — no Docker wrappers, no cloud lock-in." />
+    <meta name="keywords" content="PaaS, self-hosted, Kubernetes, K3s, open source, deploy, Heroku alternative, cloud platform, AGPL" />
+    <meta name="author" content="Sailbox" />
+    <meta name="theme-color" content="#863bff" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Sailbox — Self-hosted PaaS, powered by Kubernetes" />
+    <meta property="og:description" content="Deploy to your own servers with real Kubernetes. From one node to a full cluster — no Docker wrappers, no cloud lock-in." />
+    <meta property="og:image" content="/og.png" />
+    <meta property="og:site_name" content="Sailbox" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Sailbox — Self-hosted PaaS, powered by Kubernetes" />
+    <meta name="twitter:description" content="Deploy to your own servers with real Kubernetes. From one node to a full cluster — no Docker wrappers, no cloud lock-in." />
+    <meta name="twitter:image" content="/og.png" />
+
+    <!-- Favicon -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32x32.png" sizes="32x32" type="image/png" />
+    <link rel="icon" href="/favicon-16x16.png" sizes="16x16" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+    <!-- Prevent flash of wrong theme -->
+    <script>
+      document.documentElement.classList.toggle(
+        "dark",
+        localStorage.theme === "dark" ||
+          (!("theme" in localStorage) && window.matchMedia("(prefers-color-scheme: dark)").matches)
+      );
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

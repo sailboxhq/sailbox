@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: sailbox-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: sailbox
+      POSTGRES_USER: sailbox
+      POSTGRES_PASSWORD: sailbox
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sailbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  valkey:
+    image: valkey/valkey:9.0-alpine
+    container_name: sailbox-valkey
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  k3s:
+    image: rancher/k3s:v1.31.4-k3s1
+    container_name: sailbox-k3s
+    privileged: true
+    restart: unless-stopped
+    command:
+      - server
+      - --disable=servicelb
+      - --tls-san=host.docker.internal
+      - --tls-san=127.0.0.1
+      - --tls-san=localhost
+    ports:
+      - "6443:6443"   # K8s API
+      - "80:80"        # Traefik HTTP
+      - "443:443"      # Traefik HTTPS
+    environment:
+      K3S_TOKEN: sailbox-dev-token
+      K3S_KUBECONFIG_OUTPUT: /output/kubeconfig.yaml
+      K3S_KUBECONFIG_MODE: "644"
+    volumes:
+      - k3sdata:/var/lib/rancher/k3s
+      - kubeconfig:/output
+    healthcheck:
+      test: ["CMD", "kubectl", "get", "nodes"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  pgdata:
+  valkeydata:
+  k3sdata:
+  kubeconfig:

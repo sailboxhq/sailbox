@@ -1,0 +1,22 @@
+:3000 {
+	# API and WebSocket
+	handle /api/* {
+		reverse_proxy localhost:8080
+	}
+	handle /ws/* {
+		reverse_proxy localhost:8080
+	}
+	handle /healthz {
+		reverse_proxy localhost:8080
+	}
+
+	# Frontend SPA
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Disable Caddy branding
+	header -Server
+}

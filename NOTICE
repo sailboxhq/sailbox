@@ -1,0 +1,30 @@
+Sailbox — Open Source PaaS Platform
+Copyright (c) 2026 Sailbox Authors
+
+Licensed under the GNU Affero General Public License v3.0 or later.
+See LICENSE for the full text.
+
+────────────────────────────────────────────────────────────────────
+Additional terms — AGPL v3 Section 7(b)
+────────────────────────────────────────────────────────────────────
+
+1. ATTRIBUTION
+
+   All copies and derivative works must keep the "Powered by Sailbox"
+   notice visible in the user interface. The notice must:
+
+   (a) appear in the sidebar or footer of the application;
+   (b) remain visible during normal use;
+   (c) link to https://github.com/sailboxhq/sailbox;
+   (d) not be hidden, reduced in size, or made less visible.
+
+   You may add your own branding alongside it, but not replace it.
+
+2. TRADEMARKS
+
+   "Sailbox" and the Sailbox logo are trademarks of the Sailbox Authors.
+   This license does not grant trademark rights beyond the attribution
+   notice above.
+
+For a commercial license without the attribution requirement,
+contact the Sailbox team.

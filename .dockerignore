@@ -1,0 +1,17 @@
+.git
+.github
+.claude
+node_modules
+bin
+dist
+tmp
+*.md
+LICENSE
+NOTICE
+Makefile
+install.sh
+deploy/docker-compose.yml
+deploy/kubeconfig
+deploy/initdb
+apps/web/node_modules
+apps/api/tmp

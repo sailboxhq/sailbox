@@ -1,0 +1,42 @@
+<!--
+  Sailbox Logo — Refined
+
+  === Geometry (same proven isometric cube) ===
+  Cube center: (16, 21), dx=7, dy=4
+
+  === Change: smaller sail ===
+  Previous sail apex: y=3 (height=10, too dominant)
+  New sail apex: y=8 (height=5, more balanced)
+
+  Sail/Box ratio: 5/16 = 0.3125
+  The sail is now an accent, not the hero — the box is the foundation.
+
+  === Change: remove top face highlight line ===
+  The stroke line created a visual artifact. Removed for cleanliness.
+
+  === Change: remove lower sail fold ===
+  The fold triangle overlapped the top face causing a double-layer look.
+  Now the sail is a single clean triangle sitting ABOVE the box,
+  not overlapping any face.
+
+  Sail: (16,8) → (23,17) → (16,13)
+    — base sits exactly on the cube top-right edge (16,13)→(23,17)
+    — tip at (16,8), directly above the cube top vertex
+    — does NOT overlap the top face polygon
+
+  === Final shapes ===
+  Top face:  (16,13) → (23,17) → (16,21) → (9,17)
+  Left face: (9,17) → (16,21) → (16,29) → (9,25)
+  Right face: (23,17) → (16,21) → (16,29) → (23,25)
+  Sail: (16,8) → (23,17) → (16,13)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="7 6 18 25" fill="none">
+  <!-- Cube: top face -->
+  <polygon points="16,13 23,17 16,21 9,17" fill="currentColor" opacity="0.12"/>
+  <!-- Cube: left face (shadow) -->
+  <polygon points="9,17 16,21 16,29 9,25" fill="currentColor" opacity="0.48"/>
+  <!-- Cube: right face (lit) -->
+  <polygon points="23,17 16,21 16,29 23,25" fill="currentColor" opacity="0.22"/>
+  <!-- Sail: compact, sits on top-right edge of cube -->
+  <polygon points="16,8 23,17 16,13" fill="currentColor" opacity="0.90"/>
+</svg>
