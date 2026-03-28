@@ -62,13 +62,11 @@ fi
 NEW_DIGEST=$(docker inspect "$TARGET_IMAGE" --format '{{.Id}}' 2>/dev/null)
 CURRENT_DIGEST=$(docker inspect sailbox --format '{{.Image}}' 2>/dev/null)
 
+IMAGE_CHANGED=true
 if [ "$NEW_DIGEST" = "$CURRENT_DIGEST" ]; then
-    ok "Already on the latest version"
-    rm -f "$BACKUP_FILE"
-    exit 0
+    ok "Already on the latest image"
+    IMAGE_CHANGED=false
 fi
-
-ok "New image ready"
 
 # ── Step 3: Update .env ────────────────────────────────────────
 # Ensure SAILBOX_VERSION=latest
@@ -99,7 +97,7 @@ fi
 
 # ── Step 4: Restart via compose (PG stays running) ──────────────
 info "Restarting Sailbox..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-deps --pull never sailbox
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --no-deps sailbox
 
 # ── Step 5: Health check ────────────────────────────────────────
 info "Waiting for health check..."
