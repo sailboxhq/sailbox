@@ -83,7 +83,10 @@ export function VolumesTab({ app, appId }: { app: App; appId: string }) {
     updateApp.mutate(
       { volumes },
       {
-        onSuccess: () => setShowRedeploy(true),
+        onSuccess: () => {
+          // Running apps are auto-redeployed by the backend; only prompt for non-running
+          if (app.status !== "running") setShowRedeploy(true);
+        },
       },
     );
   }
@@ -249,8 +252,10 @@ export function VolumesTab({ app, appId }: { app: App; appId: string }) {
 
           {dirty && (
             <p className="text-center text-xs text-muted-foreground">
-              Click <strong>Save</strong> above to apply changes. A redeploy is needed for volumes
-              to take effect.
+              Click <strong>Save</strong> above to apply changes.
+              {app.status === "running"
+                ? " Changes will be applied automatically."
+                : " A redeploy is needed for volumes to take effect."}
             </p>
           )}
         </CardContent>

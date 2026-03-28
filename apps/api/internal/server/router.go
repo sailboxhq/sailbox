@@ -46,8 +46,9 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// WebSocket / SSE routes (auth via query param)
+	// WebSocket / SSE routes (auth via query param token)
 	wsGroup := r.Group("/ws")
+	wsGroup.Use(middleware.WSAuth(deps.JWTManager))
 	{
 		logsHandler := ws.NewLogsHandler(deps.Store, deps.Orch, deps.Logger)
 		wsGroup.GET("/logs/:appId", logsHandler.Handle)
@@ -119,10 +120,10 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 				projectGroup.DELETE("", projects.Delete)
 				projectGroup.PUT("/env", projects.UpdateEnv)
 
-				appHandler := v1.NewAppHandler(deps.Services.App, deps.Services.Metrics)
+				appHandler := v1.NewAppHandler(deps.Services.App, deps.Services.Metrics, deps.Store)
 				projectGroup.GET("/apps", appHandler.ListByProject)
 
-				dbHandler := v1.NewDatabaseHandler(deps.Services.Database)
+				dbHandler := v1.NewDatabaseHandler(deps.Services.Database, deps.Store)
 				projectGroup.GET("/databases", dbHandler.ListByProject)
 
 				cronJobHandler := v1.NewCronJobHandler(deps.Services.CronJob)
@@ -130,35 +131,40 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 			}
 
 			// Applications (flat)
-			appHandler := v1.NewAppHandler(deps.Services.App, deps.Services.Metrics)
+			appHandler := v1.NewAppHandler(deps.Services.App, deps.Services.Metrics, deps.Store)
 			protected.GET("/apps", appHandler.ListAll)
 			protected.POST("/apps", appHandler.Create)
-			protected.GET("/apps/:id", appHandler.Get)
-			protected.DELETE("/apps/:id", appHandler.Delete)
-			protected.POST("/apps/:id/scale", appHandler.Scale)
-			protected.PUT("/apps/:id/env", appHandler.UpdateEnv)
-			protected.GET("/apps/:id/status", appHandler.GetStatus)
-			protected.GET("/apps/:id/pods", appHandler.GetPods)
-			protected.GET("/apps/:id/metrics", appHandler.GetMetrics)
-			protected.POST("/apps/:id/restart", appHandler.Restart)
-			protected.POST("/apps/:id/stop", appHandler.Stop)
-			protected.POST("/apps/:id/clear-cache", appHandler.ClearBuildCache)
-			protected.PATCH("/apps/:id", appHandler.Update)
-			protected.GET("/apps/:id/pods/:podName/events", appHandler.GetPodEvents)
-			protected.GET("/apps/:id/webhook", appHandler.GetWebhookConfig)
-			protected.POST("/apps/:id/webhook/enable", appHandler.EnableWebhook)
-			protected.POST("/apps/:id/webhook/disable", appHandler.DisableWebhook)
-			protected.POST("/apps/:id/webhook/regenerate", appHandler.RegenerateWebhook)
-			protected.GET("/apps/:id/secrets", appHandler.GetSecrets)
-			protected.PUT("/apps/:id/secrets", appHandler.UpdateSecrets)
 
+			// All /apps/:id routes require org ownership verification
+			appByID := protected.Group("/apps/:id")
+			appByID.Use(appHandler.AppOrgGuard())
+			{
+				appByID.GET("", appHandler.Get)
+				appByID.DELETE("", appHandler.Delete)
+				appByID.POST("/scale", appHandler.Scale)
+				appByID.PUT("/env", appHandler.UpdateEnv)
+				appByID.GET("/status", appHandler.GetStatus)
+				appByID.GET("/pods", appHandler.GetPods)
+				appByID.GET("/metrics", appHandler.GetMetrics)
+				appByID.POST("/restart", appHandler.Restart)
+				appByID.POST("/stop", appHandler.Stop)
+				appByID.POST("/clear-cache", appHandler.ClearBuildCache)
+				appByID.PATCH("", appHandler.Update)
+				appByID.GET("/pods/:podName/events", appHandler.GetPodEvents)
+				appByID.GET("/webhook", appHandler.GetWebhookConfig)
+				appByID.POST("/webhook/enable", appHandler.EnableWebhook)
+				appByID.POST("/webhook/disable", appHandler.DisableWebhook)
+				appByID.POST("/webhook/regenerate", appHandler.RegenerateWebhook)
+				appByID.GET("/secrets", appHandler.GetSecrets)
+				appByID.PUT("/secrets", appHandler.UpdateSecrets)
+			}
 			// Deployments under apps
-			deploys := v1.NewDeployHandler(deps.Services.Deploy)
+			deploys := v1.NewDeployHandler(deps.Services.Deploy, deps.Store)
 			protected.POST("/apps/:id/deploy", deploys.Trigger)
 			protected.GET("/apps/:id/deployments", deploys.List)
 
 			// Domains under apps
-			domains := v1.NewDomainHandler(deps.Services.Domain)
+			domains := v1.NewDomainHandler(deps.Services.Domain, deps.Store)
 			protected.GET("/apps/:id/domains", domains.ListByApp)
 			protected.POST("/apps/:id/domains", domains.Create)
 			protected.POST("/apps/:id/domains/generate", domains.Generate)
@@ -184,7 +190,7 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 			protected.PATCH("/domains/:id", domains.Update)
 
 			// Databases (flat)
-			dbHandler := v1.NewDatabaseHandler(deps.Services.Database)
+			dbHandler := v1.NewDatabaseHandler(deps.Services.Database, deps.Store)
 			protected.GET("/databases/versions", dbHandler.ListVersions)
 			protected.GET("/databases/used-ports", dbHandler.UsedPorts)
 			protected.POST("/databases", dbHandler.Create)

@@ -113,9 +113,10 @@ function InfoBanner({ children }: { children: React.ReactNode }) {
 function HealthCheckCard({ app, appId }: { app: App; appId: string }) {
   const updateApp = useUpdateApp(appId);
   const hc = app.health_check;
+  const defaultPort = app.ports?.[0]?.container_port || 80;
   const [type, setType] = useState(hc?.type || "");
   const [path, setPath] = useState(hc?.path || "/healthz");
-  const [port, setPort] = useState(String(hc?.port || "8080"));
+  const [port, setPort] = useState(String(hc?.port || defaultPort));
   const [command, setCommand] = useState(hc?.command || "");
   const [initialDelay, setInitialDelay] = useState(String(hc?.initial_delay_seconds || 0));
   const [period, setPeriod] = useState(String(hc?.period_seconds || 10));
@@ -125,7 +126,7 @@ function HealthCheckCard({ app, appId }: { app: App; appId: string }) {
   const dirty =
     type !== (hc?.type || "") ||
     path !== (hc?.path || "/healthz") ||
-    port !== String(hc?.port || "8080") ||
+    port !== String(hc?.port || defaultPort) ||
     command !== (hc?.command || "") ||
     initialDelay !== String(hc?.initial_delay_seconds || 0) ||
     period !== String(hc?.period_seconds || 10) ||
@@ -176,33 +177,32 @@ function HealthCheckCard({ app, appId }: { app: App; appId: string }) {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label className="text-xs">Path</Label>
-              <Select value={path} onValueChange={setPath}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {HEALTH_CHECK_PATHS.map((p) => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                placeholder="/healthz"
+                list="hc-paths"
+              />
+              <datalist id="hc-paths">
+                {HEALTH_CHECK_PATHS.map((p) => (
+                  <option key={p.value} value={p.value} />
+                ))}
+              </datalist>
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Port</Label>
-              <Select value={port} onValueChange={setPort}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COMMON_PORTS.map((p) => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input
+                type="number"
+                value={port}
+                onChange={(e) => setPort(e.target.value)}
+                placeholder={String(defaultPort)}
+                list="hc-ports"
+              />
+              <datalist id="hc-ports">
+                {COMMON_PORTS.map((p) => (
+                  <option key={p.value} value={p.value} label={p.label} />
+                ))}
+              </datalist>
             </div>
           </div>
         )}
@@ -210,18 +210,19 @@ function HealthCheckCard({ app, appId }: { app: App; appId: string }) {
         {type === "tcp" && (
           <div className="space-y-1.5">
             <Label className="text-xs">Port</Label>
-            <Select value={port} onValueChange={setPort}>
-              <SelectTrigger className="w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {COMMON_PORTS.map((p) => (
-                  <SelectItem key={p.value} value={p.value}>
-                    {p.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Input
+              type="number"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              placeholder={String(defaultPort)}
+              list="hc-ports-tcp"
+              className="w-48"
+            />
+            <datalist id="hc-ports-tcp">
+              {COMMON_PORTS.map((p) => (
+                <option key={p.value} value={p.value} label={p.label} />
+              ))}
+            </datalist>
           </div>
         )}
 
@@ -650,7 +651,7 @@ function SourceProviderCard({ app, appId }: { app: App; appId: string }) {
     <SectionCard
       icon={Settings2}
       title="Source Provider"
-      description="Where your application code comes from."
+      description="Where your application code comes from. Changes take effect on next deploy."
       dirty={dirty}
       saving={updateApp.isPending}
       onSave={handleSave}
@@ -696,17 +697,20 @@ function SourceProviderCard({ app, appId }: { app: App; appId: string }) {
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Branch</Label>
-            <Select value={gitBranch} onValueChange={setGitBranch}>
-              <SelectTrigger className="w-48">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="main">main</SelectItem>
-                <SelectItem value="master">master</SelectItem>
-                <SelectItem value="develop">develop</SelectItem>
-                <SelectItem value="staging">staging</SelectItem>
-              </SelectContent>
-            </Select>
+            <Input
+              value={gitBranch}
+              onChange={(e) => setGitBranch(e.target.value)}
+              placeholder="main"
+              list="git-branches"
+              className="w-48"
+            />
+            <datalist id="git-branches">
+              <option value="main" />
+              <option value="master" />
+              <option value="develop" />
+              <option value="staging" />
+              <option value="production" />
+            </datalist>
           </div>
           <div className="flex items-center justify-between gap-4 py-2">
             <span className="text-sm text-muted-foreground">Auto Deploy</span>

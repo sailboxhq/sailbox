@@ -1,5 +1,5 @@
 import { Eye, EyeOff, Plus, Save, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -150,25 +150,36 @@ function SecretsSection({ appId }: { appId: string }) {
   const secretKeys = rawSecretKeys ?? [];
   const updateSecrets = useUpdateSecrets(appId);
   const [pairs, setPairs] = useState<EnvPair[]>([]);
-  const [initialized, setInitialized] = useState(false);
 
-  // Initialize pairs from server keys (values masked — never returned)
-  if (!initialized && !isLoading && secretKeys) {
-    setPairs(secretKeys.map((k) => ({ key: k, value: "" })));
-    setInitialized(true);
-  }
+  // Sync pairs when secret keys change (initial load or after mutation invalidation)
+  useEffect(() => {
+    if (!isLoading && rawSecretKeys) {
+      setPairs(rawSecretKeys.map((k) => ({ key: k, value: "" })));
+    }
+  }, [isLoading, rawSecretKeys]);
 
   function handleSave() {
     const secrets: Record<string, string> = {};
     for (const p of pairs) {
       if (p.key.trim()) {
+        // Non-empty value = set/update; empty value for existing key = delete
         secrets[p.key.trim()] = p.value;
+      }
+    }
+    // Also send empty value for keys that were removed (deleted from pairs)
+    for (const k of secretKeys) {
+      if (!pairs.some((p) => p.key.trim() === k)) {
+        secrets[k] = ""; // signal backend to delete
       }
     }
     updateSecrets.mutate(secrets);
   }
 
-  const dirty = pairs.some((p) => p.key.trim() && p.value.trim());
+  // Dirty if: any value filled, any key removed, or any new key added
+  const dirty =
+    pairs.some((p) => p.key.trim() && p.value.trim()) ||
+    pairs.length !== secretKeys.length ||
+    pairs.some((p, i) => p.key.trim() !== (secretKeys[i] || ""));
 
   return (
     <Card>

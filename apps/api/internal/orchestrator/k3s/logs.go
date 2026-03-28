@@ -28,7 +28,14 @@ func (o *Orchestrator) StreamLogs(ctx context.Context, app *model.Application, o
 		return nil, fmt.Errorf("no pods found for %s", name)
 	}
 
+	// Prefer a Running pod
 	podName := pods.Items[0].Name
+	for _, p := range pods.Items {
+		if p.Status.Phase == corev1.PodRunning {
+			podName = p.Name
+			break
+		}
+	}
 
 	logOpts := &corev1.PodLogOptions{
 		Follow:     opts.Follow,
@@ -50,6 +57,16 @@ func (o *Orchestrator) StreamLogs(ctx context.Context, app *model.Application, o
 
 func (o *Orchestrator) StreamPodLogs(ctx context.Context, app *model.Application, podName string, opts orchestrator.LogOpts) (io.ReadCloser, error) {
 	ns := appNamespace(app)
+	name := appK8sName(app)
+
+	// Validate pod belongs to this app
+	pod, err := o.client.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("pod not found: %w", err)
+	}
+	if pod.Labels["app.kubernetes.io/name"] != name {
+		return nil, fmt.Errorf("pod %s does not belong to app %s", podName, name)
+	}
 
 	logOpts := &corev1.PodLogOptions{
 		Follow:     opts.Follow,

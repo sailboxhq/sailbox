@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
+	"github.com/sailboxhq/sailbox/apps/api/internal/api/middleware"
 	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/orchestrator"
 	"github.com/sailboxhq/sailbox/apps/api/internal/store"
@@ -40,6 +41,13 @@ func (h *LogsHandler) Handle(c *gin.Context) {
 	app, err := h.store.Applications().GetByID(c.Request.Context(), appID)
 	if err != nil {
 		c.JSON(404, gin.H{"error": "app not found"})
+		return
+	}
+
+	// Verify app belongs to the authenticated user's org
+	project, err := h.store.Projects().GetByID(c.Request.Context(), app.ProjectID)
+	if err != nil || project.OrgID != middleware.GetOrgID(c) {
+		c.JSON(403, gin.H{"error": "access denied"})
 		return
 	}
 

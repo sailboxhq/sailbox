@@ -183,12 +183,15 @@ func (s *DomainService) Update(ctx context.Context, id uuid.UUID, host *string, 
 		oldDomain := *domain
 		oldDomain.Host = oldHost
 		if err := s.orch.DeleteIngress(ctx, &oldDomain); err != nil {
-			s.logger.Warn("failed to delete old ingress", slog.Any("error", err))
+			s.logger.Warn("failed to delete old ingress — old host may still be accessible", slog.String("old_host", oldHost), slog.Any("error", err))
+			// Don't fail the rename — new domain works, old one is a stale route
+			// Users can clean it up via Cluster > Health > Orphan Ingresses
 		}
 	} else {
 		// Just update in-place
 		if err := s.orch.UpdateIngress(ctx, domain, app); err != nil {
 			s.logger.Error("failed to update ingress", slog.Any("error", err))
+			return nil, fmt.Errorf("domain saved, but ingress not updated: %w", err)
 		}
 	}
 
@@ -217,20 +220,21 @@ func (s *DomainService) ListByApp(ctx context.Context, appID uuid.UUID) ([]model
 			changed = true
 		}
 
-		// Backfill CertSecret from ingress TLS spec if missing (upgrade compat)
-		if domains[i].TLS && domains[i].CertSecret == "" {
-			if status != nil && status.CertSecret != "" {
-				domains[i].CertSecret = status.CertSecret
-				changed = true
-			}
+		// Migrate CertSecret to traefik-acme (Traefik manages certs, not K8s Secrets)
+		if domains[i].TLS && domains[i].CertSecret != "traefik-acme" {
+			domains[i].CertSecret = "traefik-acme"
+			changed = true
 		}
 
-		// Check cert expiry
+		// Check cert expiry — only update if actually changed
 		if domains[i].TLS && domains[i].CertSecret != "" {
 			expiry, cErr := s.orch.GetCertExpiry(ctx, &domains[i], app)
 			if cErr == nil && expiry != nil {
-				domains[i].CertExpiry = expiry
-				changed = true
+				// Only mark changed if expiry is new or different
+				if domains[i].CertExpiry == nil || !expiry.Equal(*domains[i].CertExpiry) {
+					domains[i].CertExpiry = expiry
+					changed = true
+				}
 			}
 		}
 
@@ -250,6 +254,7 @@ func (s *DomainService) Delete(ctx context.Context, id uuid.UUID) error {
 
 	if err := s.orch.DeleteIngress(ctx, domain); err != nil {
 		s.logger.Error("failed to delete ingress", slog.Any("error", err))
+		return fmt.Errorf("failed to remove ingress from cluster: %w — domain not deleted", err)
 	}
 
 	return s.store.Domains().Delete(ctx, id)

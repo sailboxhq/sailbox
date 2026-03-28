@@ -90,6 +90,22 @@ func (s *DatabaseService) Create(ctx context.Context, input CreateDatabaseInput)
 		db.MemLimit = "512Mi"
 	}
 
+	// Check for K8s name conflicts in the same project (apps + databases share namespace)
+	k8sName := sanitizeK8sName(db.Name)
+	db.K8sName = k8sName
+	existingDBs, _, _ := s.store.ManagedDatabases().ListByProject(ctx, input.ProjectID, store.ListParams{Page: 1, PerPage: 1000})
+	for _, e := range existingDBs {
+		if sanitizeK8sName(e.Name) == k8sName {
+			return nil, fmt.Errorf("a database with K8s name %q already exists (from %q)", k8sName, e.Name)
+		}
+	}
+	existingApps, _, _ := s.store.Applications().ListByProject(ctx, input.ProjectID, store.ListParams{Page: 1, PerPage: 10000})
+	for _, e := range existingApps {
+		if sanitizeK8sName(e.Name) == k8sName {
+			return nil, fmt.Errorf("an application with K8s name %q already exists (from %q) — app and database names must not collide", k8sName, e.Name)
+		}
+	}
+
 	if err := s.store.ManagedDatabases().Create(ctx, db); err != nil {
 		return nil, err
 	}

@@ -166,6 +166,7 @@ function AppDetailPage() {
 
         <TabsContent value="environment" className="mt-4">
           <EnvironmentTab
+            key={`${appId}-${JSON.stringify(app.env_vars)}-${JSON.stringify(app.build_env_vars)}`}
             appId={appId}
             envVars={app.env_vars ?? {}}
             buildEnvVars={app.build_env_vars ?? {}}

@@ -1,5 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ChevronRight, Clock, Play, Plus, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Pause,
+  Play,
+  Plus,
+  RotateCw,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
@@ -28,9 +37,11 @@ import {
 import { Separator } from "@/components/ui/separator";
 import {
   useCreateCronJob,
+  useCronJobRuns,
   useDeleteCronJob,
   useProjectCronJobs,
   useTriggerCronJob,
+  useUpdateCronJob,
 } from "@/hooks/use-cronjobs";
 import { useProjects } from "@/hooks/use-projects";
 import { statusVariant } from "@/lib/constants";
@@ -117,52 +128,123 @@ function CronJobsPage() {
 
 function CronJobRow({ cronJob: cj, onDelete }: { cronJob: CronJob; onDelete: () => void }) {
   const trigger = useTriggerCronJob(cj.id);
+  const update = useUpdateCronJob(cj.id);
+  const { data: runs } = useCronJobRuns(cj.id);
+  const [expanded, setExpanded] = useState(false);
 
   return (
     <Card className="group transition-colors hover:bg-accent/50">
-      <CardContent className="flex items-center gap-4 p-4">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-          <Clock className="h-5 w-5 text-primary" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">{cj.name}</span>
-            <Badge variant={statusVariant(cj.status)} className="text-xs">
-              {cj.status}
-            </Badge>
-            {!cj.enabled && (
-              <Badge variant="secondary" className="text-xs">
-                suspended
+      <CardContent className="p-0">
+        <button
+          type="button"
+          className="flex w-full items-center gap-4 p-4 text-left"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+            <Clock className="h-5 w-5 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">{cj.name}</span>
+              <Badge variant={statusVariant(cj.status)} className="text-xs">
+                {cj.status}
               </Badge>
+              {!cj.enabled && (
+                <Badge variant="secondary" className="text-xs">
+                  suspended
+                </Badge>
+              )}
+            </div>
+            <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
+              <span className="font-mono">{cj.cron_expression}</span>
+              <span>{cj.image || cj.git_repo}</span>
+              {cj.last_run_at && <span>Last: {new Date(cj.last_run_at).toLocaleString()}</span>}
+            </div>
+          </div>
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: stop click propagation to parent button */}
+          <div
+            className="flex shrink-0 items-center gap-1"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.key === "Enter" && e.stopPropagation()}
+          >
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8"
+              onClick={() => update.mutate({ enabled: !cj.enabled })}
+              disabled={update.isPending}
+              title={cj.enabled ? "Suspend" : "Resume"}
+            >
+              {cj.enabled ? (
+                <Pause className="h-3.5 w-3.5" />
+              ) : (
+                <Play className="h-3.5 w-3.5 text-green-500" />
+              )}
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8"
+              onClick={() => trigger.mutate()}
+              disabled={trigger.isPending || !cj.enabled}
+              title="Run now"
+            >
+              <RotateCw className={`h-3.5 w-3.5 ${trigger.isPending ? "animate-spin" : ""}`} />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 text-destructive hover:text-destructive"
+              onClick={onDelete}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+            {expanded ? (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
             )}
           </div>
-          <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
-            <span className="font-mono">{cj.cron_expression}</span>
-            <span>{cj.image || cj.git_repo}</span>
-            {cj.last_run_at && <span>Last: {new Date(cj.last_run_at).toLocaleString()}</span>}
+        </button>
+
+        {expanded && (
+          <div className="border-t px-4 py-3">
+            <h4 className="mb-2 text-xs font-medium text-muted-foreground">Recent Runs</h4>
+            {!runs || runs.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No runs yet</p>
+            ) : (
+              <div className="space-y-1">
+                {runs.slice(0, 10).map((run) => (
+                  <div key={run.id} className="flex items-center gap-3 text-xs">
+                    <Badge
+                      variant={statusVariant(run.status)}
+                      className="w-20 justify-center text-xs"
+                    >
+                      {run.status}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {new Date(run.started_at).toLocaleString()}
+                    </span>
+                    {run.finished_at && (
+                      <span className="text-muted-foreground">
+                        (
+                        {Math.round(
+                          (new Date(run.finished_at).getTime() -
+                            new Date(run.started_at).getTime()) /
+                            1000,
+                        )}
+                        s)
+                      </span>
+                    )}
+                    <Badge variant="outline" className="text-xs">
+                      {run.trigger_type}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-8 w-8"
-            onClick={() => trigger.mutate()}
-            disabled={trigger.isPending}
-            title="Run now"
-          >
-            <Play className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-8 w-8 text-destructive hover:text-destructive"
-            onClick={onDelete}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        </div>
+        )}
       </CardContent>
     </Card>
   );

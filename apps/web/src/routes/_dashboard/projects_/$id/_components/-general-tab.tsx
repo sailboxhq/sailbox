@@ -9,38 +9,38 @@ import type { App, AppStatus, PodEvent, PodInfo } from "@/types/api";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/** Parse a K8s resource string into a base numeric value.
- *  CPU: millicores (m), nanocores (n), or bare number (cores)
- *  Memory: Ki, Mi, Gi, or bare bytes
- */
-function parseResource(raw: string): number {
+/** Parse CPU string into millicores */
+function parseCPU(raw: string): number {
   if (!raw) return 0;
   const s = raw.trim();
-  const lower = s.toLowerCase();
-  // CPU: nanocores
-  if (lower.endsWith("n")) return Number.parseFloat(s) / 1_000_000;
-  // Memory units (case-sensitive in K8s: Ki, Mi, Gi)
+  if (s.endsWith("n")) return Number.parseFloat(s) / 1_000_000;
+  if (s.endsWith("m")) return Number.parseFloat(s);
+  // Bare number = cores → convert to millicores
+  return (Number.parseFloat(s) || 0) * 1000;
+}
+
+/** Parse memory string into bytes */
+function parseMem(raw: string): number {
+  if (!raw) return 0;
+  const s = raw.trim();
   if (s.endsWith("Ki")) return Number.parseFloat(s) * 1024;
   if (s.endsWith("Mi")) return Number.parseFloat(s) * 1024 * 1024;
   if (s.endsWith("Gi")) return Number.parseFloat(s) * 1024 * 1024 * 1024;
-  // CPU millicores
-  if (lower.endsWith("m")) return Number.parseFloat(s);
-  // Bare number: could be cores (CPU) or bytes (memory)
   return Number.parseFloat(s) || 0;
 }
 
-/** Format CPU value to human-readable (e.g. "56m", "1.2 cores") */
+/** Format CPU millicores to human-readable */
 function formatCPU(raw: string): string {
   if (!raw || raw === "0") return "0m";
-  const millis = parseResource(raw);
+  const millis = parseCPU(raw);
   if (millis >= 1000) return `${(millis / 1000).toFixed(1)}`;
   return `${Math.round(millis)}m`;
 }
 
-/** Format memory value to human-readable (e.g. "36Mi", "1.2Gi") */
+/** Format bytes to human-readable */
 function formatMem(raw: string): string {
   if (!raw || raw === "0") return "0Mi";
-  const bytes = parseResource(raw);
+  const bytes = parseMem(raw);
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}Gi`;
   if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))}Mi`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)}Ki`;
@@ -58,8 +58,9 @@ function ResourceBar({
   label: string;
   isCPU?: boolean;
 }) {
-  const u = parseResource(used);
-  const t = parseResource(total);
+  const parse = isCPU ? parseCPU : parseMem;
+  const u = parse(used);
+  const t = parse(total);
   const pct = t > 0 ? Math.min((u / t) * 100, 100) : 0;
   const fmt = isCPU ? formatCPU : formatMem;
   const color = pct > 90 ? "bg-red-500" : pct > 70 ? "bg-yellow-500" : "bg-primary";
@@ -239,9 +240,14 @@ export function GeneralTab({
       <Card>
         <CardContent className="p-4">
           <p className="text-xs font-medium text-muted-foreground">Internal URL</p>
-          <p className="mt-1 font-mono text-sm">
-            http://{app.k8s_name || app.name}:{app.ports?.[0]?.service_port || 80}
-          </p>
+          {(app.ports && app.ports.length > 0
+            ? app.ports
+            : [{ service_port: 80, protocol: "tcp" }]
+          ).map((p, i) => (
+            <p key={i} className="mt-1 font-mono text-sm">
+              http://{app.k8s_name || app.name}:{p.service_port}
+            </p>
+          ))}
           <p className="mt-1 text-xs text-muted-foreground">
             Accessible from any service in the {app.namespace || "default"} namespace
           </p>

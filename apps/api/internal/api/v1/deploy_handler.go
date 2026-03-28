@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/gin-gonic/gin"
@@ -14,17 +15,58 @@ import (
 )
 
 type DeployHandler struct {
-	svc *service.DeployService
+	svc   *service.DeployService
+	store store.Store
 }
 
-func NewDeployHandler(svc *service.DeployService) *DeployHandler {
-	return &DeployHandler{svc: svc}
+func NewDeployHandler(svc *service.DeployService, s store.Store) *DeployHandler {
+	return &DeployHandler{svc: svc, store: s}
+}
+
+// verifyDeploymentOrg checks that a deployment belongs to the caller's org.
+func (h *DeployHandler) verifyDeploymentOrg(c *gin.Context, deployID uuid.UUID) (*model.Deployment, error) {
+	deploy, err := h.svc.GetByID(c.Request.Context(), deployID)
+	if err != nil {
+		return nil, err
+	}
+	app, err := h.store.Applications().GetByID(c.Request.Context(), deploy.AppID)
+	if err != nil {
+		return nil, err
+	}
+	project, err := h.store.Projects().GetByID(c.Request.Context(), app.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if project.OrgID != middleware.GetOrgID(c) {
+		return nil, fmt.Errorf("access denied")
+	}
+	return deploy, nil
+}
+
+// verifyAppOrg checks that an app belongs to the caller's org.
+func (h *DeployHandler) verifyAppOrg(c *gin.Context, appID uuid.UUID) error {
+	app, err := h.store.Applications().GetByID(c.Request.Context(), appID)
+	if err != nil {
+		return err
+	}
+	project, err := h.store.Projects().GetByID(c.Request.Context(), app.ProjectID)
+	if err != nil {
+		return err
+	}
+	if project.OrgID != middleware.GetOrgID(c) {
+		return fmt.Errorf("access denied")
+	}
+	return nil
 }
 
 func (h *DeployHandler) Trigger(c *gin.Context) {
 	appID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail("invalid app ID"))
+		return
+	}
+	if err := h.verifyAppOrg(c, appID); err != nil {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
 		return
 	}
 
@@ -42,7 +84,7 @@ func (h *DeployHandler) Trigger(c *gin.Context) {
 
 	deploy, err := h.svc.Trigger(c.Request.Context(), input)
 	if err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 
@@ -56,7 +98,7 @@ func (h *DeployHandler) Get(c *gin.Context) {
 		return
 	}
 
-	deploy, err := h.svc.GetByID(c.Request.Context(), id)
+	deploy, err := h.verifyDeploymentOrg(c, id)
 	if err != nil {
 		httputil.RespondError(c, apierr.ErrNotFound.WithDetail("deployment not found"))
 		return
@@ -69,6 +111,10 @@ func (h *DeployHandler) List(c *gin.Context) {
 	appID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail("invalid app ID"))
+		return
+	}
+	if err := h.verifyAppOrg(c, appID); err != nil {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
 		return
 	}
 
@@ -138,6 +184,10 @@ func (h *DeployHandler) Cancel(c *gin.Context) {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail("invalid deployment ID"))
 		return
 	}
+	if _, err := h.verifyDeploymentOrg(c, id); err != nil {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
+		return
+	}
 	if err := h.svc.Cancel(c.Request.Context(), id); err != nil {
 		httputil.RespondError(c, err)
 		return
@@ -149,6 +199,10 @@ func (h *DeployHandler) Rollback(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail("invalid deployment ID"))
+		return
+	}
+	if _, err := h.verifyDeploymentOrg(c, id); err != nil {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
 		return
 	}
 

@@ -11,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { getToken } from "@/lib/auth";
 import type { PodInfo } from "@/types/api";
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -71,6 +72,9 @@ function WebTerminal({ appId, pods }: { appId: string; pods: PodInfo[] }) {
   async function connect() {
     if (!containerRef.current || !hasPods) return;
 
+    // Prevent double connect (e.g. rapid clicks during async import)
+    if (wsRef.current) return;
+
     // Dynamic import to avoid bundling issues
     const { Terminal } = await import("@xterm/xterm");
     const { FitAddon } = await import("@xterm/addon-fit");
@@ -93,7 +97,10 @@ function WebTerminal({ appId, pods }: { appId: string; pods: PodInfo[] }) {
 
     // Connect WebSocket
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/terminal/${appId}`);
+    const token = getToken();
+    const ws = new WebSocket(
+      `${proto}//${window.location.host}/ws/terminal/${appId}?token=${encodeURIComponent(token || "")}`,
+    );
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -114,6 +121,7 @@ function WebTerminal({ appId, pods }: { appId: string; pods: PodInfo[] }) {
 
     ws.onclose = () => {
       setConnected(false);
+      wsRef.current = null;
       term.write("\r\n[Disconnected]\r\n");
     };
 
@@ -226,10 +234,12 @@ export function LogsTab({
   const connect = useCallback(() => {
     wsRef.current?.close();
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    let url = `${proto}//${window.location.host}/ws/logs/${appId}`;
+    const token = getToken() || "";
+    const params = new URLSearchParams({ token });
     if (selectedPod && selectedPod !== "__all__") {
-      url += `?pod=${encodeURIComponent(selectedPod)}`;
+      params.set("pod", selectedPod);
     }
+    const url = `${proto}//${window.location.host}/ws/logs/${appId}?${params}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => {
@@ -237,7 +247,12 @@ export function LogsTab({
       setLogs([]);
     };
     ws.onmessage = (e) => setLogs((prev) => [...prev.slice(-499), e.data]);
-    ws.onclose = () => setConnected(false);
+    ws.onclose = () => {
+      // Only update state if this is still the active connection (not a stale close)
+      if (wsRef.current === ws) {
+        setConnected(false);
+      }
+    };
   }, [appId, selectedPod]);
 
   // Auto-reconnect when pod selection changes while connected

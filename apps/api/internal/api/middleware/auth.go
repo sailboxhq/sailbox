@@ -141,6 +141,37 @@ func RequireRole(roles ...string) gin.HandlerFunc {
 	}
 }
 
+// WSAuth validates a JWT token from the query parameter "token".
+// Used for WebSocket/SSE routes where Authorization headers can't be set.
+func WSAuth(jwtManager *auth.JWTManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.Query("token")
+		if token == "" {
+			// Fallback: try Authorization header (for SSE clients that support it)
+			header := c.GetHeader("Authorization")
+			if header != "" {
+				parts := strings.SplitN(header, " ", 2)
+				if len(parts) == 2 {
+					token = parts[1]
+				}
+			}
+		}
+		if token == "" {
+			c.AbortWithStatusJSON(401, gin.H{"error": "authentication required"})
+			return
+		}
+		claims, err := jwtManager.ValidateAccessToken(token)
+		if err != nil {
+			c.AbortWithStatusJSON(401, gin.H{"error": "invalid token"})
+			return
+		}
+		c.Set(CtxUserID, claims.UserID)
+		c.Set(CtxOrgID, claims.OrgID)
+		c.Set(CtxRole, claims.Role)
+		c.Next()
+	}
+}
+
 // RequireSetupSecret validates the X-Setup-Secret header against the configured secret.
 // Used to protect unauthenticated setup-only endpoints (e.g. system restore).
 func RequireSetupSecret(secret string) gin.HandlerFunc {

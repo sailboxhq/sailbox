@@ -182,7 +182,9 @@ export function useDeletePVC() {
       api.delete(`/api/v1/cluster/pvcs/${namespace}/${name}`),
     onSuccess: () => {
       toast.success("Volume deleted");
+      // Immediate + delayed refresh to catch K8s propagation delay
       qc.invalidateQueries({ queryKey: ["cluster"] });
+      setTimeout(() => qc.invalidateQueries({ queryKey: ["cluster"] }), 2000);
     },
     onError: (err: any) => toast.error(err?.detail || "Failed to delete volume"),
   });

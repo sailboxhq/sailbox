@@ -67,7 +67,8 @@ export function useEventSource() {
     }
 
     function connect() {
-      const url = `${window.location.origin}/ws/events`;
+      const token = localStorage.getItem("sailbox_token") || "";
+      const url = `${window.location.origin}/ws/events?token=${encodeURIComponent(token)}`;
       es = new EventSource(url);
 
       es.onopen = () => {

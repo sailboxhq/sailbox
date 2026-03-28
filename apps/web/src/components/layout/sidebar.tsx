@@ -178,18 +178,18 @@ function UpgradeButton({
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const upgradeCmd = `curl -sSL https://get.sailbox.dev/upgrade | sudo sh`;
-
-  const changelogLines = (v.changelog || "")
-    .split("\n")
-    .filter((l) => l.trim().startsWith("- ") || l.trim().startsWith("* "))
-    .slice(0, 5);
+  const upgradeCmd = "curl -sSL https://get.sailbox.dev/upgrade | sudo sh";
 
   function copyCommand() {
     navigator.clipboard.writeText(upgradeCmd);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
+
+  const changelogLines = (v.changelog || "")
+    .split("\n")
+    .filter((l) => l.trim().startsWith("- ") || l.trim().startsWith("* "))
+    .slice(0, 5);
 
   return (
     <>

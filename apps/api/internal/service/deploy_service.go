@@ -90,10 +90,10 @@ func (s *DeployService) Trigger(ctx context.Context, input TriggerDeployInput) (
 		return nil, err
 	}
 
-	// Prevent triggering deploy while another is in progress
+	// Prevent triggering deploy while another operation is in progress
 	switch app.Status {
-	case model.AppStatusBuilding, model.AppStatusDeploying:
-		return nil, fmt.Errorf("app is currently %s, wait for it to finish or cancel first", app.Status)
+	case model.AppStatusBuilding, model.AppStatusDeploying, model.AppStatusRestarting, model.AppStatusStopping:
+		return nil, fmt.Errorf("app is currently %s, wait for it to finish first", app.Status)
 	}
 
 	now := time.Now()
@@ -255,6 +255,20 @@ func (s *DeployService) executeDeploy(ctx context.Context, app *model.Applicatio
 	deploy.Image = app.DockerImage
 	s.updateDeploy(ctx, deploy)
 	s.setAppStatus(ctx, app.ID, model.AppStatusRunning)
+	// Persist any metadata written back by orchestrator (e.g. PVC names)
+	_ = s.store.Applications().Update(ctx, app)
+
+	// Restore HPA if autoscaling is configured (may have been removed by Stop)
+	if app.Autoscaling != nil && app.Autoscaling.Enabled {
+		if err := s.orch.ConfigureHPA(ctx, app, *app.Autoscaling); err != nil {
+			s.logger.Error("failed to restore HPA after deploy — autoscaling inactive until manually re-saved",
+				slog.String("app", app.Name), slog.Any("error", err))
+			s.notifyDeploy(app, model.EventDeploySuccess,
+				fmt.Sprintf("%s deployed successfully, but autoscaling (HPA) failed to restore — re-save autoscaling settings to fix", app.Name))
+			return
+		}
+	}
+
 	s.logger.Info("deploy succeeded", slog.String("app", app.Name), slog.String("deploy", deploy.ID.String()))
 	s.notifyDeploy(app, model.EventDeploySuccess, fmt.Sprintf("%s deployed successfully", app.Name))
 
@@ -419,17 +433,21 @@ func (s *DeployService) Rollback(ctx context.Context, deployID uuid.UUID, trigge
 	now := time.Now()
 	deploy := &model.Deployment{
 		AppID:       app.ID,
-		Status:      model.DeployDeploying,
+		Status:      model.DeploySuccess,
 		Image:       prev.Image,
 		CommitSHA:   prev.CommitSHA,
 		TriggerType: "rollback",
 		TriggeredBy: triggeredBy,
 		StartedAt:   &now,
+		FinishedAt:  &now,
 	}
 
 	if err := s.store.Deployments().Create(ctx, deploy); err != nil {
 		return nil, err
 	}
+
+	s.setAppStatus(ctx, app.ID, model.AppStatusRunning)
+	s.logger.Info("rollback succeeded", slog.String("app", app.Name), slog.String("to_deploy", deployID.String()))
 
 	return deploy, nil
 }

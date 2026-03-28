@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/orchestrator"
 	"github.com/sailboxhq/sailbox/apps/api/internal/store"
@@ -96,6 +98,21 @@ func (s *AppService) Create(ctx context.Context, input CreateAppInput) (*model.A
 		return nil, fmt.Errorf("project has no namespace configured")
 	}
 	app.Namespace = project.Namespace
+	app.K8sName = sanitizeK8sName(app.Name)
+
+	// Check for K8s name conflicts in the same project (apps + databases share namespace)
+	existingApps, _, _ := s.store.Applications().ListByProject(ctx, input.ProjectID, store.ListParams{Page: 1, PerPage: 10000})
+	for _, e := range existingApps {
+		if sanitizeK8sName(e.Name) == app.K8sName {
+			return nil, fmt.Errorf("an application with K8s name %q already exists (from %q)", app.K8sName, e.Name)
+		}
+	}
+	existingDBs, _, _ := s.store.ManagedDatabases().ListByProject(ctx, input.ProjectID, store.ListParams{Page: 1, PerPage: 10000})
+	for _, e := range existingDBs {
+		if sanitizeK8sName(e.Name) == app.K8sName {
+			return nil, fmt.Errorf("a database with K8s name %q already exists (from %q) — app and database names must not collide", app.K8sName, e.Name)
+		}
+	}
 
 	// Validate git provider belongs to same org
 	if app.GitProviderID != nil {
@@ -207,14 +224,23 @@ func (s *AppService) Update(ctx context.Context, id uuid.UUID, input UpdateAppIn
 	// Track whether runtime-affecting fields changed (need K8s deployment update)
 	runtimeChanged := false
 
-	// Apply source fields
+	// Apply source fields (prevent clearing required values)
 	if input.GitRepo != nil {
+		if app.SourceType == model.SourceGit && strings.TrimSpace(*input.GitRepo) == "" {
+			return nil, fmt.Errorf("git repo cannot be empty for git-based apps")
+		}
 		app.GitRepo = *input.GitRepo
 	}
 	if input.GitBranch != nil {
+		if strings.TrimSpace(*input.GitBranch) == "" {
+			return nil, fmt.Errorf("git branch cannot be empty")
+		}
 		app.GitBranch = *input.GitBranch
 	}
 	if input.DockerImage != nil {
+		if app.SourceType == model.SourceImage && strings.TrimSpace(*input.DockerImage) == "" {
+			return nil, fmt.Errorf("docker image cannot be empty for image-based apps")
+		}
 		app.DockerImage = *input.DockerImage
 	}
 
@@ -290,19 +316,131 @@ func (s *AppService) Update(ctx context.Context, id uuid.UUID, input UpdateAppIn
 		runtimeChanged = true
 	}
 
+	// Server-side validation
+	if app.HealthCheck != nil && app.HealthCheck.Type != "" {
+		switch app.HealthCheck.Type {
+		case "http":
+			if app.HealthCheck.Path == "" {
+				return nil, fmt.Errorf("health check path is required for HTTP probe")
+			}
+			if app.HealthCheck.Port <= 0 || app.HealthCheck.Port > 65535 {
+				return nil, fmt.Errorf("health check port must be between 1 and 65535")
+			}
+		case "tcp":
+			if app.HealthCheck.Port <= 0 || app.HealthCheck.Port > 65535 {
+				return nil, fmt.Errorf("health check port must be between 1 and 65535")
+			}
+		case "exec":
+			if app.HealthCheck.Command == "" {
+				return nil, fmt.Errorf("health check command is required for exec probe")
+			}
+		default:
+			return nil, fmt.Errorf("invalid health check type: %s", app.HealthCheck.Type)
+		}
+	}
+	if app.TerminationGracePeriod < 0 {
+		return nil, fmt.Errorf("termination grace period cannot be negative")
+	}
+	for _, p := range app.Ports {
+		if p.ContainerPort <= 0 || p.ContainerPort > 65535 {
+			return nil, fmt.Errorf("container port must be between 1 and 65535")
+		}
+		if p.Protocol != "" && p.Protocol != "tcp" && p.Protocol != "udp" {
+			return nil, fmt.Errorf("port protocol must be tcp or udp")
+		}
+	}
+	// Validate resource format (must be valid K8s quantities)
+	for _, res := range []struct{ name, val string }{
+		{"cpu_limit", app.CPULimit}, {"mem_limit", app.MemLimit},
+		{"cpu_request", app.CPURequest}, {"mem_request", app.MemRequest},
+	} {
+		if res.val != "" {
+			if _, err := resource.ParseQuantity(res.val); err != nil {
+				return nil, fmt.Errorf("invalid %s %q: %w", res.name, res.val, err)
+			}
+		}
+	}
+	// Validate volumes
+	volNames := make(map[string]bool)
+	volMounts := make(map[string]bool)
+	for _, vol := range app.Volumes {
+		if vol.Name == "" {
+			return nil, fmt.Errorf("volume name cannot be empty")
+		}
+		if volNames[vol.Name] {
+			return nil, fmt.Errorf("duplicate volume name: %s", vol.Name)
+		}
+		volNames[vol.Name] = true
+		if vol.MountPath == "" {
+			return nil, fmt.Errorf("volume mount path cannot be empty")
+		}
+		if !strings.HasPrefix(vol.MountPath, "/") {
+			return nil, fmt.Errorf("volume mount path must be absolute (start with /): %s", vol.MountPath)
+		}
+		if volMounts[vol.MountPath] {
+			return nil, fmt.Errorf("duplicate volume mount path: %s", vol.MountPath)
+		}
+		volMounts[vol.MountPath] = true
+		if vol.Size != "" {
+			if _, err := resource.ParseQuantity(vol.Size); err != nil {
+				return nil, fmt.Errorf("invalid volume size %q for %s: %w", vol.Size, vol.Name, err)
+			}
+		}
+	}
+	// Validate request <= limit
+	if app.CPURequest != "" && app.CPULimit != "" {
+		req, _ := resource.ParseQuantity(app.CPURequest)
+		lim, _ := resource.ParseQuantity(app.CPULimit)
+		if req.Cmp(lim) > 0 {
+			return nil, fmt.Errorf("cpu_request (%s) cannot exceed cpu_limit (%s)", app.CPURequest, app.CPULimit)
+		}
+	}
+	if app.MemRequest != "" && app.MemLimit != "" {
+		req, _ := resource.ParseQuantity(app.MemRequest)
+		lim, _ := resource.ParseQuantity(app.MemLimit)
+		if req.Cmp(lim) > 0 {
+			return nil, fmt.Errorf("mem_request (%s) cannot exceed mem_limit (%s)", app.MemRequest, app.MemLimit)
+		}
+	}
+	// Validate autoscaling
+	if app.Autoscaling != nil && app.Autoscaling.Enabled {
+		if app.Autoscaling.MinReplicas <= 0 {
+			return nil, fmt.Errorf("HPA min replicas must be at least 1")
+		}
+		if app.Autoscaling.MaxReplicas < app.Autoscaling.MinReplicas {
+			return nil, fmt.Errorf("HPA max replicas must be >= min replicas")
+		}
+		if app.Autoscaling.CPUTarget <= 0 && app.Autoscaling.MemTarget <= 0 {
+			return nil, fmt.Errorf("HPA requires at least one metric target (CPU or memory)")
+		}
+	}
+	// Validate deploy strategy
+	if app.DeployStrategy != "" && app.DeployStrategy != "rolling" && app.DeployStrategy != "recreate" {
+		return nil, fmt.Errorf("deploy strategy must be 'rolling' or 'recreate'")
+	}
+
+	// Save to DB first, then apply to K8s — rollback DB on K8s failure
+	oldApp, _ := s.store.Applications().GetByID(ctx, app.ID)
 	if err := s.store.Applications().Update(ctx, app); err != nil {
 		return nil, err
+	}
+
+	rollback := func(reason string, cause error) (*model.Application, error) {
+		if oldApp != nil {
+			_ = s.store.Applications().Update(ctx, oldApp)
+		}
+		return nil, fmt.Errorf("%s (settings rolled back, redeploy to reconcile): %w", reason, cause)
 	}
 
 	// Reconcile K8s resources if autoscaling changed
 	if input.Autoscaling != nil {
 		if input.Autoscaling.Enabled {
 			if err := s.orch.ConfigureHPA(ctx, app, *input.Autoscaling); err != nil {
-				s.logger.Error("failed to configure HPA", slog.Any("error", err))
+				return rollback("failed to apply HPA", err)
 			}
 		} else {
 			if err := s.orch.DeleteHPA(ctx, app); err != nil {
-				s.logger.Error("failed to delete HPA", slog.Any("error", err))
+				return rollback("failed to remove HPA", err)
 			}
 		}
 	}
@@ -335,9 +473,10 @@ func (s *AppService) Update(ctx context.Context, id uuid.UUID, input UpdateAppIn
 			TerminationGracePeriod: app.TerminationGracePeriod,
 			NodePool:               app.NodePool,
 		}); err != nil {
-			s.logger.Warn("failed to apply runtime changes to deployment — will take effect on next deploy",
-				slog.String("app", app.Name), slog.Any("error", err))
+			return rollback("failed to apply deployment changes", err)
 		}
+		// Persist metadata written back by orchestrator (e.g. PVC names)
+		_ = s.store.Applications().Update(ctx, app)
 	}
 
 	s.logger.Info("application updated", slog.String("name", app.Name), slog.String("id", app.ID.String()))
@@ -439,6 +578,15 @@ func (s *AppService) Scale(ctx context.Context, id uuid.UUID, replicas int32) (*
 		return nil, err
 	}
 
+	// Block manual scaling when HPA is active
+	if app.Autoscaling != nil && app.Autoscaling.Enabled {
+		return nil, fmt.Errorf("manual scaling is disabled while autoscaling (HPA) is active — disable HPA first")
+	}
+
+	if replicas < 0 || replicas > 100 {
+		return nil, fmt.Errorf("replicas must be between 0 and 100")
+	}
+
 	if err := s.orch.Scale(ctx, app, replicas); err != nil {
 		return nil, err
 	}
@@ -460,20 +608,22 @@ func (s *AppService) UpdateEnvVars(ctx context.Context, id uuid.UUID, envVars ma
 		return nil, err
 	}
 
-	// Merge project env + app env and push to running deployment
-	mergedEnv := make(map[string]string)
-	project, projErr := s.store.Projects().GetByID(ctx, app.ProjectID)
-	if projErr == nil && project.EnvVars != nil {
-		for k, v := range project.EnvVars {
+	// Push to running deployment only if app is actually deployed
+	if app.Status == model.AppStatusRunning || app.Status == model.AppStatusPartial {
+		mergedEnv := make(map[string]string)
+		project, projErr := s.store.Projects().GetByID(ctx, app.ProjectID)
+		if projErr == nil && project.EnvVars != nil {
+			for k, v := range project.EnvVars {
+				mergedEnv[k] = v
+			}
+		}
+		for k, v := range app.EnvVars {
 			mergedEnv[k] = v
 		}
-	}
-	for k, v := range app.EnvVars {
-		mergedEnv[k] = v
-	}
-	if err := s.orch.UpdateEnvVars(ctx, app, mergedEnv); err != nil {
-		s.logger.Warn("failed to push env vars to deployment — will take effect on next deploy",
-			slog.String("app", app.Name), slog.Any("error", err))
+		if err := s.orch.UpdateEnvVars(ctx, app, mergedEnv); err != nil {
+			s.logger.Error("failed to push env vars to deployment", slog.String("app", app.Name), slog.Any("error", err))
+			return nil, fmt.Errorf("environment saved, but failed to apply to running deployment: %w", err)
+		}
 	}
 
 	s.logger.Info("env vars updated", slog.String("app", app.Name), slog.Int("count", len(envVars)))
@@ -528,8 +678,14 @@ func (s *AppService) Restart(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 
-	// Mark as restarting — K8s rolling restart takes time.
-	// Status will be reconciled by the orchestrator's GetStatus on next query.
+	// Only allow restart on running/partial apps
+	switch app.Status {
+	case model.AppStatusRunning, model.AppStatusPartial, model.AppStatusError:
+		// OK
+	default:
+		return fmt.Errorf("cannot restart app in %s state", app.Status)
+	}
+
 	_ = s.store.Applications().UpdateStatus(ctx, id, model.AppStatusRestarting)
 
 	if err := s.orch.Restart(ctx, app); err != nil {
@@ -537,8 +693,6 @@ func (s *AppService) Restart(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 
-	// Don't set back to "running" here — let the UI query GetStatus from K8s
-	// to get the real state (pods may still be rolling).
 	return nil
 }
 
@@ -546,6 +700,21 @@ func (s *AppService) Stop(ctx context.Context, id uuid.UUID) error {
 	app, err := s.store.Applications().GetByID(ctx, id)
 	if err != nil {
 		return err
+	}
+
+	// Only allow stop on running/partial/error apps
+	switch app.Status {
+	case model.AppStatusRunning, model.AppStatusPartial, model.AppStatusError:
+		// OK
+	default:
+		return fmt.Errorf("cannot stop app in %s state", app.Status)
+	}
+
+	// Suspend HPA first to prevent it from scaling back up
+	if app.Autoscaling != nil && app.Autoscaling.Enabled {
+		if err := s.orch.DeleteHPA(ctx, app); err != nil {
+			return fmt.Errorf("cannot stop: failed to remove HPA (app would be scaled back up): %w", err)
+		}
 	}
 
 	_ = s.store.Applications().UpdateStatus(ctx, id, model.AppStatusStopping)
@@ -657,22 +826,53 @@ func (s *AppService) UpdateSecrets(ctx context.Context, id uuid.UUID, secrets ma
 	if err != nil {
 		return nil, err
 	}
-	app.Secrets = secrets
+	// Save old secrets for rollback
+	oldSecrets := make(map[string]string)
+	for k, v := range app.Secrets {
+		oldSecrets[k] = v
+	}
+
+	// Merge: only overwrite keys that have non-empty values; empty value = delete key
+	if app.Secrets == nil {
+		app.Secrets = make(map[string]string)
+	}
+	for k, v := range secrets {
+		if v == "" {
+			delete(app.Secrets, k)
+		} else {
+			app.Secrets[k] = v
+		}
+	}
 	if err := s.store.Applications().Update(ctx, app); err != nil {
 		return nil, err
 	}
 
-	// Create/update the K8s Secret
-	if err := s.orch.EnsureSecret(ctx, app, secrets); err != nil {
+	// Create/update the K8s Secret — rollback DB on failure
+	if err := s.orch.EnsureSecret(ctx, app, app.Secrets); err != nil {
 		s.logger.Error("failed to ensure K8s secret", slog.Any("error", err), slog.String("app", app.Name))
+		app.Secrets = oldSecrets
+		_ = s.store.Applications().Update(ctx, app)
+		return nil, fmt.Errorf("failed to apply secrets to cluster (rolled back): %w", err)
 	}
 
-	keys := make([]string, 0, len(secrets))
-	for k := range secrets {
+	keys := make([]string, 0, len(app.Secrets))
+	for k := range app.Secrets {
 		keys = append(keys, k)
 	}
 	s.logger.Info("secrets updated", slog.String("app", app.Name), slog.Int("count", len(secrets)))
 	return keys, nil
+}
+
+// sanitizeK8sName normalizes a name to a valid K8s resource name.
+// Must match the logic in orchestrator/k3s/deploy.go sanitize().
+func sanitizeK8sName(name string) string {
+	n := strings.ToLower(name)
+	n = strings.ReplaceAll(n, "_", "-")
+	n = strings.ReplaceAll(n, " ", "-")
+	if len(n) > 63 {
+		n = n[:63]
+	}
+	return n
 }
 
 func randomHex(n int) string {

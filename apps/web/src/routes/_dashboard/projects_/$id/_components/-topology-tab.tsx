@@ -59,7 +59,7 @@ export function TopologyTab({
   const phase = appStatus?.phase ?? app.status;
   const readyReplicas = appStatus?.ready_replicas ?? 0;
   const desiredReplicas = appStatus?.desired_replicas ?? app.replicas;
-  const port = app.ports?.[0];
+  const ports = app.ports ?? [];
 
   return (
     <div className="space-y-6">
@@ -115,12 +115,11 @@ export function TopologyTab({
         <div className="flex-1">
           <FlowNode icon={Network} title="Service">
             <p className="font-mono text-xs">{app.k8s_name || app.name}</p>
-            {port && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                :{port.container_port} → :{port.service_port} / {port.protocol}
+            {ports.map((p, i) => (
+              <p key={i} className="mt-0.5 text-xs text-muted-foreground">
+                :{p.container_port} → :{p.service_port} / {p.protocol}
               </p>
-            )}
-            <p className="mt-1 text-xs text-muted-foreground">ClusterIP</p>
+            ))}
           </FlowNode>
         </div>
 
@@ -187,7 +186,11 @@ export function TopologyTab({
 
         <FlowNode icon={Network} title="Service">
           <p className="font-mono text-xs">{app.k8s_name || app.name}</p>
-          {port && <p className="text-xs text-muted-foreground">:{port.service_port}</p>}
+          {ports.map((p, i) => (
+            <p key={i} className="text-xs text-muted-foreground">
+              :{p.service_port}
+            </p>
+          ))}
         </FlowNode>
 
         <div className="flex justify-center">

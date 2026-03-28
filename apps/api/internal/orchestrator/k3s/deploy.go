@@ -75,9 +75,13 @@ func (o *Orchestrator) Deploy(ctx context.Context, app *model.Application, opts 
 	// Build container ports
 	var containerPorts []corev1.ContainerPort
 	for _, p := range opts.Ports {
+		proto := corev1.ProtocolTCP
+		if strings.EqualFold(p.Protocol, "udp") {
+			proto = corev1.ProtocolUDP
+		}
 		containerPorts = append(containerPorts, corev1.ContainerPort{
 			ContainerPort: int32(p.ContainerPort),
-			Protocol:      corev1.ProtocolTCP,
+			Protocol:      proto,
 		})
 	}
 	if len(containerPorts) == 0 {
@@ -121,13 +125,17 @@ func (o *Orchestrator) Deploy(ctx context.Context, app *model.Application, opts 
 	// Build volume mounts and PVCs
 	var volumeMounts []corev1.VolumeMount
 	var volumes []corev1.Volume
-	for _, vol := range opts.Volumes {
+	for i, vol := range opts.Volumes {
 		pvcName := fmt.Sprintf("%s-%s", name, vol.Name)
 
-		// Ensure PVC exists
+		// Ensure PVC exists — fail the entire deploy if a requested volume can't be created
 		if err := o.ensurePVC(ctx, ns, pvcName, vol.Size, labels); err != nil {
-			o.logger.Error("failed to create PVC", slog.String("name", pvcName), slog.Any("error", err))
-			continue
+			return fmt.Errorf("failed to create volume %s: %w", pvcName, err)
+		}
+
+		// Write back PVC name to app model for UI display
+		if i < len(app.Volumes) {
+			app.Volumes[i].PVCName = pvcName
 		}
 
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -260,12 +268,12 @@ func (o *Orchestrator) Deploy(ctx context.Context, app *model.Application, opts 
 
 	// Ensure Service with full port mapping
 	if err := o.ensureService(ctx, ns, name, labels, opts.Ports); err != nil {
-		o.logger.Error("failed to create service", slog.Any("error", err))
+		return fmt.Errorf("service update failed: %w", err)
 	}
 
 	// Sync ingress backend ports if they changed
 	if err := o.SyncIngressPorts(ctx, app); err != nil {
-		o.logger.Error("failed to sync ingress ports", slog.Any("error", err))
+		return fmt.Errorf("ingress port sync failed: %w", err)
 	}
 
 	o.logger.Info("deployed to K3s", slog.String("name", name), slog.String("ns", ns), slog.String("image", opts.Image))
@@ -281,10 +289,23 @@ func parseResourceOrDefault(value, defaultVal string) resource.Quantity {
 }
 
 // ensurePVC creates a PersistentVolumeClaim if it doesn't already exist.
+// If it exists and the requested size is larger, attempts to expand it.
 func (o *Orchestrator) ensurePVC(ctx context.Context, ns, name, size string, labels map[string]string) error {
-	_, err := o.client.CoreV1().PersistentVolumeClaims(ns).Get(ctx, name, metav1.GetOptions{})
+	existing, err := o.client.CoreV1().PersistentVolumeClaims(ns).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
-		return nil // already exists
+		// PVC exists — check if expansion is needed
+		requestedSize := parseResourceOrDefault(size, "1Gi")
+		if currentSize, ok := existing.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+			if requestedSize.Cmp(currentSize) > 0 {
+				existing.Spec.Resources.Requests[corev1.ResourceStorage] = requestedSize
+				_, updateErr := o.client.CoreV1().PersistentVolumeClaims(ns).Update(ctx, existing, metav1.UpdateOptions{})
+				if updateErr != nil {
+					return fmt.Errorf("PVC %s expansion from %s to %s failed: %w", name, currentSize.String(), requestedSize.String(), updateErr)
+				}
+				o.logger.Info("PVC expanded", slog.String("pvc", name), slog.String("new_size", requestedSize.String()))
+			}
+		}
+		return nil
 	}
 	if !errors.IsNotFound(err) {
 		return err
@@ -609,17 +630,26 @@ func (o *Orchestrator) GetPods(ctx context.Context, app *model.Application) ([]o
 			})
 		}
 
-		// Derive resource totals from container specs (requests/limits)
-		var cpuTotal, memTotal string
+		// Derive resource totals from container specs (sum across all containers)
+		cpuTotalQ := resource.Quantity{}
+		memTotalQ := resource.Quantity{}
 		for _, c := range pod.Spec.Containers {
 			if lim := c.Resources.Limits; lim != nil {
 				if cpu, ok := lim[corev1.ResourceCPU]; ok {
-					cpuTotal = cpu.String()
+					cpuTotalQ.Add(cpu)
 				}
 				if mem, ok := lim[corev1.ResourceMemory]; ok {
-					memTotal = mem.String()
+					memTotalQ.Add(mem)
 				}
 			}
+		}
+		cpuTotal := cpuTotalQ.String()
+		memTotal := memTotalQ.String()
+		if cpuTotal == "0" {
+			cpuTotal = ""
+		}
+		if memTotal == "0" {
+			memTotal = ""
 		}
 
 		// Merge real-time usage from metrics-server
@@ -689,16 +719,17 @@ func (o *Orchestrator) fetchPodMetrics(ctx context.Context, namespace, labelName
 	}
 
 	for _, item := range resp.Items {
-		var cpu, mem string
+		cpuQ := resource.Quantity{}
+		memQ := resource.Quantity{}
 		for _, c := range item.Containers {
-			if cpu == "" {
-				cpu = c.Usage.CPU
+			if q, err := resource.ParseQuantity(c.Usage.CPU); err == nil {
+				cpuQ.Add(q)
 			}
-			if mem == "" {
-				mem = c.Usage.Memory
+			if q, err := resource.ParseQuantity(c.Usage.Memory); err == nil {
+				memQ.Add(q)
 			}
 		}
-		result[item.Metadata.Name] = podMetric{cpuUsed: cpu, memUsed: mem}
+		result[item.Metadata.Name] = podMetric{cpuUsed: cpuQ.String(), memUsed: memQ.String()}
 	}
 	return result
 }
@@ -710,6 +741,17 @@ func (o *Orchestrator) DeletePod(ctx context.Context, podName string, app *model
 
 func (o *Orchestrator) GetPodEvents(ctx context.Context, app *model.Application, podName string) ([]orchestrator.PodEvent, error) {
 	ns := appNamespace(app)
+	name := appK8sName(app)
+
+	// Verify pod belongs to this app
+	pod, err := o.client.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("pod not found: %w", err)
+	}
+	if pod.Labels["app.kubernetes.io/name"] != name {
+		return nil, fmt.Errorf("pod %s does not belong to app %s", podName, name)
+	}
+
 	events, err := o.client.CoreV1().Events(ns).List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("involvedObject.name=%s,involvedObject.kind=Pod", podName),
 	})

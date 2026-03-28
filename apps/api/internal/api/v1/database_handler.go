@@ -6,18 +6,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/sailboxhq/sailbox/apps/api/internal/api/middleware"
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
 	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/service"
+	"github.com/sailboxhq/sailbox/apps/api/internal/store"
 )
 
 type DatabaseHandler struct {
-	svc *service.DatabaseService
+	svc   *service.DatabaseService
+	store store.Store
 }
 
-func NewDatabaseHandler(svc *service.DatabaseService) *DatabaseHandler {
-	return &DatabaseHandler{svc: svc}
+func NewDatabaseHandler(svc *service.DatabaseService, s store.Store) *DatabaseHandler {
+	return &DatabaseHandler{svc: svc, store: s}
 }
 
 // dbErr wraps a service error as a ProblemDetail if it isn't one already.
@@ -49,6 +52,17 @@ func (h *DatabaseHandler) Create(c *gin.Context) {
 	var input service.CreateDatabaseInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		httputil.RespondError(c, apierr.ErrValidation.WithDetail(err.Error()))
+		return
+	}
+
+	// Verify project belongs to caller's org
+	project, pErr := h.store.Projects().GetByID(c.Request.Context(), input.ProjectID)
+	if pErr != nil {
+		httputil.RespondError(c, apierr.ErrNotFound.WithDetail("project not found"))
+		return
+	}
+	if project.OrgID != middleware.GetOrgID(c) {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
 		return
 	}
 

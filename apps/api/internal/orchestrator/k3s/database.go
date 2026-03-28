@@ -242,7 +242,7 @@ func (o *Orchestrator) DeployDatabase(ctx context.Context, db *model.ManagedData
 	}
 	_, err = o.client.CoreV1().Services(ns).Create(ctx, svc, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
-		o.logger.Error("create db service", slog.Any("error", err))
+		return fmt.Errorf("create db service: %w", err)
 	}
 
 	// Set K8s metadata on the db pointer so the caller can persist it

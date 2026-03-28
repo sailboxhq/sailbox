@@ -75,7 +75,10 @@ function DomainStatusBadges({ domain }: { domain: Domain }) {
           </Badge>
         );
       }
-    } else if (domain.ingress_ready) {
+    } else if (
+      domain.ingress_ready &&
+      !domain.host.match(/\.(sslip\.io|nip\.io|traefik\.me|localhost)$/)
+    ) {
       cert = (
         <Badge variant="outline" className="text-xs text-yellow-500">
           <Clock className="mr-1 h-2.5 w-2.5" />

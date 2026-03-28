@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/sailboxhq/sailbox/apps/api/internal/api/middleware"
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
 	"github.com/sailboxhq/sailbox/apps/api/internal/service"
@@ -53,10 +54,37 @@ func parseMiB(raw string) float64 {
 type AppHandler struct {
 	svc     *service.AppService
 	metrics *service.MetricsCollector
+	store   store.Store
 }
 
-func NewAppHandler(svc *service.AppService, metrics *service.MetricsCollector) *AppHandler {
-	return &AppHandler{svc: svc, metrics: metrics}
+func NewAppHandler(svc *service.AppService, metrics *service.MetricsCollector, s store.Store) *AppHandler {
+	return &AppHandler{svc: svc, metrics: metrics, store: s}
+}
+
+// AppOrgGuard is a middleware that verifies the :id app belongs to the caller's org.
+// Attach to any route group that uses :id as an app ID.
+func (h *AppHandler) AppOrgGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := uuid.Parse(c.Param("id"))
+		if err != nil {
+			httputil.RespondError(c, apierr.ErrBadRequest.WithDetail("invalid app ID"))
+			c.Abort()
+			return
+		}
+		app, err := h.store.Applications().GetByID(c.Request.Context(), id)
+		if err != nil {
+			httputil.RespondError(c, apierr.ErrNotFound.WithDetail("application not found"))
+			c.Abort()
+			return
+		}
+		project, err := h.store.Projects().GetByID(c.Request.Context(), app.ProjectID)
+		if err != nil || project.OrgID != middleware.GetOrgID(c) {
+			httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 func (h *AppHandler) ListAll(c *gin.Context) {
@@ -97,9 +125,20 @@ func (h *AppHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Verify project belongs to caller's org
+	project, pErr := h.store.Projects().GetByID(c.Request.Context(), input.ProjectID)
+	if pErr != nil {
+		httputil.RespondError(c, apierr.ErrNotFound.WithDetail("project not found"))
+		return
+	}
+	if project.OrgID != middleware.GetOrgID(c) {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
+		return
+	}
+
 	app, err := h.svc.Create(c.Request.Context(), input)
 	if err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 
@@ -112,13 +151,11 @@ func (h *AppHandler) Get(c *gin.Context) {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail("invalid app ID"))
 		return
 	}
-
 	app, err := h.svc.GetByID(c.Request.Context(), id)
 	if err != nil {
 		httputil.RespondError(c, apierr.ErrNotFound.WithDetail("application not found"))
 		return
 	}
-
 	httputil.RespondOK(c, app)
 }
 
@@ -154,7 +191,7 @@ func (h *AppHandler) Scale(c *gin.Context) {
 
 	app, err := h.svc.Scale(c.Request.Context(), id, input.Replicas)
 	if err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 
@@ -176,7 +213,7 @@ func (h *AppHandler) UpdateEnv(c *gin.Context) {
 	}
 	app, err := h.svc.UpdateEnvVars(c.Request.Context(), id, input.EnvVars)
 	if err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 	httputil.RespondOK(c, app)
@@ -249,7 +286,7 @@ func (h *AppHandler) Restart(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Restart(c.Request.Context(), id); err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 	httputil.RespondOK(c, gin.H{"message": "restart triggered"})
@@ -275,7 +312,7 @@ func (h *AppHandler) Stop(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Stop(c.Request.Context(), id); err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 	httputil.RespondOK(c, gin.H{"message": "stopped"})
@@ -294,7 +331,7 @@ func (h *AppHandler) Update(c *gin.Context) {
 	}
 	app, err := h.svc.Update(c.Request.Context(), id, input)
 	if err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 	httputil.RespondOK(c, app)
@@ -397,7 +434,7 @@ func (h *AppHandler) UpdateSecrets(c *gin.Context) {
 	}
 	keys, err := h.svc.UpdateSecrets(c.Request.Context(), id, secrets)
 	if err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 	httputil.RespondOK(c, keys)
