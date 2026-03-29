@@ -2,6 +2,7 @@ package v1
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -56,7 +57,7 @@ func (h *DomainHandler) ListByApp(c *gin.Context) {
 	}
 	domains, err := h.svc.ListByApp(c.Request.Context(), appID)
 	if err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrInternal.WithDetail("failed to list domains"))
 		return
 	}
 	httputil.RespondList(c, domains)
@@ -114,7 +115,7 @@ func (h *DomainHandler) Delete(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
-		httputil.RespondError(c, err)
+		httputil.RespondError(c, apierr.ErrInternal.WithDetail("domain deletion failed"))
 		return
 	}
 	httputil.RespondNoContent(c)
@@ -140,7 +141,20 @@ func (h *DomainHandler) Update(c *gin.Context) {
 	}
 	domain, err := h.svc.Update(c.Request.Context(), id, input.Host, input.ForceHTTPS)
 	if err != nil {
-		httputil.RespondError(c, err)
+		msg := err.Error()
+		// Validation errors → 400 with detail; operational errors → 500 without internals
+		if strings.Contains(msg, "already in use") ||
+			strings.Contains(msg, "hostname") ||
+			strings.Contains(msg, "invalid character") ||
+			strings.Contains(msg, "label") ||
+			strings.Contains(msg, "cannot be empty") ||
+			strings.Contains(msg, "characters or fewer") ||
+			strings.Contains(msg, "at least two") ||
+			strings.Contains(msg, "cannot rename") {
+			httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(msg))
+		} else {
+			httputil.RespondError(c, apierr.ErrInternal.WithDetail("domain update failed"))
+		}
 		return
 	}
 	httputil.RespondOK(c, domain)

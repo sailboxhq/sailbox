@@ -101,6 +101,9 @@ type IngressManager interface {
 	CreateIngress(ctx context.Context, domain *model.Domain, app *model.Application) error
 	UpdateIngress(ctx context.Context, domain *model.Domain, app *model.Application) error
 	DeleteIngress(ctx context.Context, domain *model.Domain) error
+	DeleteIngressByName(ctx context.Context, app *model.Application, name string) error
+	IngressName(app *model.Application, host string) string
+	LegacyIngressName(app *model.Application, host string) string
 	GetIngressStatus(ctx context.Context, domain *model.Domain, app *model.Application) (*IngressStatus, error)
 	GetCertExpiry(ctx context.Context, domain *model.Domain, app *model.Application) (*time.Time, error)
 	EnsurePanelIngress(ctx context.Context, domain, httpsEmail string) error

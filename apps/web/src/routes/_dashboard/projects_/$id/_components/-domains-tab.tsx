@@ -84,7 +84,7 @@ function DomainStatusBadges({ domain }: { domain: Domain }) {
       }
     } else if (
       domain.ingress_ready &&
-      !domain.host.match(/\.(sslip\.io|nip\.io|traefik\.me|localhost)$/)
+      !domain.host.match(/\.(sslip\.io|nip\.io|traefik\.me|localhost|local|test)$/)
     ) {
       cert = (
         <Badge variant="outline" className="text-xs text-yellow-500">
@@ -124,6 +124,10 @@ function DomainRow({
   const baseDomain = hasBaseDomain ? domain.host.slice(dotIdx + 1) : "";
   const [editPrefix, setEditPrefix] = useState(prefix);
 
+  // Only manually-configured TLS domains (tls=true, auto_cert=false) cannot be renamed
+  // because the cert is bound to the host. Auto-cert domains get new certs automatically.
+  const canRename = !domain.tls || domain.auto_cert;
+
   function toggleForceHttps() {
     updateDomain.mutate({ id: domain.id, force_https: !domain.force_https });
   }
@@ -148,7 +152,7 @@ function DomainRow({
           <Globe className="h-4 w-4 text-primary" />
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
-              {editing ? (
+              {editing && canRename ? (
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -207,15 +211,17 @@ function DomainRow({
                   >
                     {domain.host}
                   </a>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6 text-muted-foreground"
-                    onClick={() => setEditing(true)}
-                    title="Rename domain"
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </Button>
+                  {canRename && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-muted-foreground"
+                      onClick={() => setEditing(true)}
+                      title="Rename domain"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                  )}
                 </>
               )}
             </div>

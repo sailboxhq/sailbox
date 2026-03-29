@@ -211,6 +211,18 @@ func (n *NoopOrchestrator) DeleteIngress(ctx context.Context, domain *model.Doma
 	return nil
 }
 
+func (n *NoopOrchestrator) DeleteIngressByName(ctx context.Context, app *model.Application, name string) error {
+	return nil
+}
+
+func (n *NoopOrchestrator) IngressName(app *model.Application, host string) string {
+	return "noop"
+}
+
+func (n *NoopOrchestrator) LegacyIngressName(app *model.Application, host string) string {
+	return "noop"
+}
+
 func (n *NoopOrchestrator) GetIngressStatus(ctx context.Context, domain *model.Domain, app *model.Application) (*IngressStatus, error) {
 	return &IngressStatus{Ready: true}, nil
 }

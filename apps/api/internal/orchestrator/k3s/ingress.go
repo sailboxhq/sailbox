@@ -2,8 +2,10 @@ package k3s
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"log/slog"
@@ -23,10 +25,7 @@ import (
 
 func (o *Orchestrator) CreateIngress(ctx context.Context, domain *model.Domain, app *model.Application) error {
 	ns := appNamespace(app)
-	name := fmt.Sprintf("%s-%s", appK8sName(app), sanitize(domain.Host))
-	if len(name) > 63 {
-		name = name[:63]
-	}
+	name := ingressName(appK8sName(app), domain.Host)
 
 	annotations := map[string]string{
 		"kubernetes.io/ingress.class": "traefik",
@@ -36,10 +35,10 @@ func (o *Orchestrator) CreateIngress(ctx context.Context, domain *model.Domain, 
 	if domain.TLS && domain.AutoCert && !isDevDomain(domain.Host) {
 		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
 		annotations["traefik.ingress.kubernetes.io/router.tls.certresolver"] = "letsencrypt"
-		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "websecure"
-	} else {
-		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
 	}
+	// Always listen on both HTTP and HTTPS so browsers can reach the domain
+	// regardless of which protocol the user types. Force HTTPS (below) handles redirect.
+	annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
 
 	// Force HTTPS redirect
 	if domain.ForceHTTPS {
@@ -104,13 +103,51 @@ func (o *Orchestrator) CreateIngress(ctx context.Context, domain *model.Domain, 
 	}
 
 	existing, err := o.client.NetworkingV1().Ingresses(ns).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			_, err = o.client.NetworkingV1().Ingresses(ns).Create(ctx, ingress, metav1.CreateOptions{})
+	if k8serrors.IsNotFound(err) {
+		// Check for legacy ingress name (pre-hash scheme, truncated at 63)
+		legacy := legacyIngressName(appK8sName(app), domain.Host)
+		if legacy != name {
+			_, legacyErr := o.client.NetworkingV1().Ingresses(ns).Get(ctx, legacy, metav1.GetOptions{})
+			if legacyErr == nil {
+				// Legacy ingress exists — migrate: create new first, then delete legacy
+				if _, createErr := o.client.NetworkingV1().Ingresses(ns).Create(ctx, ingress, metav1.CreateOptions{}); createErr == nil {
+					if delErr := o.client.NetworkingV1().Ingresses(ns).Delete(ctx, legacy, metav1.DeleteOptions{}); delErr != nil && !k8serrors.IsNotFound(delErr) {
+						o.logger.Warn("legacy ingress migration: failed to delete old ingress, duplicate may remain",
+							slog.String("legacy", legacy), slog.Any("error", delErr))
+					}
+					o.logger.Info("migrated legacy ingress", slog.String("old", legacy), slog.String("new", name))
+					err = nil
+				} else {
+					// New name create failed — keep legacy ingress working, update it in-place
+					legacyIng, _ := o.client.NetworkingV1().Ingresses(ns).Get(ctx, legacy, metav1.GetOptions{})
+					if legacyIng != nil {
+						legacyIng.Spec = ingress.Spec
+						legacyIng.Annotations = annotations
+						_, err = o.client.NetworkingV1().Ingresses(ns).Update(ctx, legacyIng, metav1.UpdateOptions{})
+					} else {
+						err = createErr
+					}
+				}
+			} else if k8serrors.IsNotFound(legacyErr) {
+				// No legacy ingress — create normally
+				_, err = o.client.NetworkingV1().Ingresses(ns).Create(ctx, ingress, metav1.CreateOptions{})
+			} else {
+				// Transient K8s API error — don't mask it
+				return fmt.Errorf("check legacy ingress %s: %w", legacy, legacyErr)
+			}
 		} else {
-			return err
+			_, err = o.client.NetworkingV1().Ingresses(ns).Create(ctx, ingress, metav1.CreateOptions{})
 		}
+	} else if err != nil {
+		return err
 	} else {
+		// Update existing hashed ingress, and clean up any leftover legacy ingress
+		legacy := legacyIngressName(appK8sName(app), domain.Host)
+		if legacy != name {
+			if delErr := o.client.NetworkingV1().Ingresses(ns).Delete(ctx, legacy, metav1.DeleteOptions{}); delErr == nil {
+				o.logger.Info("cleaned up leftover legacy ingress during update", slog.String("legacy", legacy))
+			}
+		}
 		existing.Spec = ingress.Spec
 		existing.Annotations = annotations
 		_, err = o.client.NetworkingV1().Ingresses(ns).Update(ctx, existing, metav1.UpdateOptions{})
@@ -202,10 +239,10 @@ func (o *Orchestrator) EnsurePanelIngress(ctx context.Context, domain, httpsEmai
 	if !isDevDomain(domain) {
 		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
 		annotations["traefik.ingress.kubernetes.io/router.tls.certresolver"] = "letsencrypt"
-		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "websecure"
-	} else {
-		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
+		// Panel must always force HTTPS in production — no plaintext admin access
+		annotations["traefik.ingress.kubernetes.io/router.middlewares"] = "default-redirect-https@kubernetescrd"
 	}
+	annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
 
 	pathType := networkingv1.PathTypePrefix
 	port := int32(3000)
@@ -352,6 +389,49 @@ func isDevDomain(host string) bool {
 		strings.Contains(host, ".sslip.io")
 }
 
+func (o *Orchestrator) IngressName(app *model.Application, host string) string {
+	return ingressName(appK8sName(app), host)
+}
+
+func (o *Orchestrator) LegacyIngressName(app *model.Application, host string) string {
+	return legacyIngressName(appK8sName(app), host)
+}
+
+func ingressName(appName, host string) string {
+	sanitized := fmt.Sprintf("%s-%s", appName, sanitize(host))
+	if len(sanitized) <= 63 {
+		return sanitized
+	}
+	// Hash from the full unsanitized input to avoid collisions when sanitize() truncates
+	full := fmt.Sprintf("%s-%s", appName, host)
+	h := sha256.Sum256([]byte(full))
+	suffix := hex.EncodeToString(h[:4]) // 8 chars
+	return sanitized[:63-9] + "-" + suffix
+}
+
+// legacyIngressName returns the old truncate-at-63 name used before the hash scheme.
+// Used as fallback when looking up existing ingresses from older installations.
+func legacyIngressName(appName, host string) string {
+	name := fmt.Sprintf("%s-%s", appName, sanitize(host))
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return name
+}
+
+func (o *Orchestrator) DeleteIngressByName(ctx context.Context, app *model.Application, name string) error {
+	ns := appNamespace(app)
+	err := o.client.NetworkingV1().Ingresses(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if k8serrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete ingress %s: %w", name, err)
+	}
+	o.logger.Info("ingress deleted by name", slog.String("name", name), slog.String("ns", ns))
+	return nil
+}
+
 func (o *Orchestrator) UpdateIngress(ctx context.Context, domain *model.Domain, app *model.Application) error {
 	return o.CreateIngress(ctx, domain, app) // Upsert
 }
@@ -365,6 +445,7 @@ func (o *Orchestrator) DeleteIngress(ctx context.Context, domain *model.Domain) 
 		return err
 	}
 
+	var lastErr error
 	for _, ns := range nsList.Items {
 		ingresses, err := o.client.NetworkingV1().Ingresses(ns.Name).List(ctx, metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("sailbox/domain-id=%s", domain.ID.String()),
@@ -373,12 +454,18 @@ func (o *Orchestrator) DeleteIngress(ctx context.Context, domain *model.Domain) 
 			continue
 		}
 		for _, ing := range ingresses.Items {
-			_ = o.client.NetworkingV1().Ingresses(ns.Name).Delete(ctx, ing.Name, metav1.DeleteOptions{})
-			o.logger.Info("ingress deleted", slog.String("name", ing.Name))
+			if err := o.client.NetworkingV1().Ingresses(ns.Name).Delete(ctx, ing.Name, metav1.DeleteOptions{}); err != nil {
+				if !k8serrors.IsNotFound(err) {
+					lastErr = fmt.Errorf("delete ingress %s: %w", ing.Name, err)
+					o.logger.Error("failed to delete ingress", slog.String("name", ing.Name), slog.Any("error", err))
+				}
+			} else {
+				o.logger.Info("ingress deleted", slog.String("name", ing.Name))
+			}
 		}
 	}
 
-	return nil
+	return lastErr
 }
 
 func (o *Orchestrator) GetIngressStatus(ctx context.Context, domain *model.Domain, app *model.Application) (*orchestrator.IngressStatus, error) {
