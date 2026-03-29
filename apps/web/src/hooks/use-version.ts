@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { VersionInfo } from "@/types/api";
 
@@ -8,5 +8,11 @@ export function useVersion() {
     queryFn: () => api.get<VersionInfo>("/api/v1/version"),
     refetchInterval: 60 * 60 * 1000, // 1 hour
     staleTime: 60 * 60 * 1000,
+  });
+}
+
+export function useTriggerUpgrade() {
+  return useMutation({
+    mutationFn: () => api.post<{ message: string }>("/api/v1/system/upgrade", {}),
   });
 }

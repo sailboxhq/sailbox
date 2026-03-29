@@ -285,9 +285,23 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 			protected.PUT("/team/projects/:projectId/members/:userId", middleware.RequireRole("owner"), team.SetProjectAccess)
 			protected.DELETE("/team/projects/:projectId/members/:userId", middleware.RequireRole("owner"), team.RemoveProjectAccess)
 
-			// Version
+			// Version & Upgrade
 			protected.GET("/version", func(c *gin.Context) {
 				c.JSON(200, deps.Services.Version.GetVersionInfo(c.Request.Context()))
+			})
+			protected.POST("/system/upgrade", middleware.RequireRole("owner"), func(c *gin.Context) {
+				if err := deps.Services.Version.TriggerUpgrade(); err != nil {
+					c.JSON(400, gin.H{"detail": err.Error()})
+					return
+				}
+				c.JSON(200, gin.H{"message": "upgrade started"})
+			})
+			protected.GET("/system/upgrade/status", middleware.RequireRole("owner"), func(c *gin.Context) {
+				c.JSON(200, deps.Services.Version.GetUpgradeStatus())
+			})
+			protected.DELETE("/system/upgrade/status", middleware.RequireRole("owner"), func(c *gin.Context) {
+				deps.Services.Version.ClearUpgradeStatus()
+				c.JSON(200, gin.H{"message": "upgrade status cleared"})
 			})
 
 			// System Backups

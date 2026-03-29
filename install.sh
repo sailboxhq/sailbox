@@ -212,6 +212,8 @@ services:
       SERVER_PORT: "8080"
     volumes:
       - /etc/rancher/k3s/k3s.yaml:/etc/rancher/k3s/k3s.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${INSTALL_DIR}:/opt/sailbox
 
   postgres:
     image: postgres:18-alpine
@@ -234,6 +236,15 @@ services:
 volumes:
   pgdata:
 COMPOSEFILE
+
+    # Download upgrade library for self-upgrade support
+    LIB_URL="https://raw.githubusercontent.com/sailboxhq/sailbox/main/deploy/upgrade-lib.sh"
+    if curl -sSL --max-time 10 "$LIB_URL" -o "$INSTALL_DIR/upgrade-lib.sh" 2>/dev/null && [ -s "$INSTALL_DIR/upgrade-lib.sh" ]; then
+        chmod +x "$INSTALL_DIR/upgrade-lib.sh"
+        ok "Upgrade library installed"
+    else
+        warn "Could not download upgrade library — self-upgrade from panel will not be available"
+    fi
 
     info "Pulling images..."
     if ! docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull 2>&1; then

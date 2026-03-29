@@ -40,7 +40,7 @@ RUN cd apps/web && bun run build
 # ============================================================================
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata curl \
+RUN apk add --no-cache ca-certificates tzdata curl docker-cli docker-cli-compose \
     && addgroup -S sailbox && adduser -S sailbox -G sailbox
 
 COPY --from=api-builder /usr/local/bin/sailbox-api /usr/local/bin/sailbox-api

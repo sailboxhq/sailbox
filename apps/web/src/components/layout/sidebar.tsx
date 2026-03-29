@@ -21,7 +21,7 @@ import { BRAND_ANCHOR, BRAND_TEXT, BRAND_URL, SPONSOR_URL } from "@/components/b
 import { Logo } from "@/components/logo";
 import { useCurrentUser } from "@/hooks/use-auth";
 import { useActiveAlerts } from "@/hooks/use-monitoring";
-import { useVersion } from "@/hooks/use-version";
+import { useTriggerUpgrade, useVersion } from "@/hooks/use-version";
 import { clearTokens } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
@@ -177,6 +177,9 @@ function UpgradeButton({
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [upgradeState, setUpgradeState] = useState<"idle" | "upgrading" | "done" | "error">("idle");
+  const [upgradeMsg, setUpgradeMsg] = useState("");
+  const triggerUpgrade = useTriggerUpgrade();
 
   const upgradeCmd = "curl -sSL https://get.sailbox.dev/upgrade | sudo sh";
 
@@ -184,6 +187,48 @@ function UpgradeButton({
     navigator.clipboard.writeText(upgradeCmd);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  // Poll upgrade status — the upgrader container writes status to a shared file,
+  // and the API reads it. The upgrader handles health checks and rollback.
+  useEffect(() => {
+    if (upgradeState !== "upgrading") return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/v1/system/upgrade/status", {
+          headers: { Authorization: `Bearer ${localStorage.getItem("sailbox_token")}` },
+        });
+        if (!res.ok) return; // API temporarily unavailable during restart
+        const data = await res.json();
+        setUpgradeMsg(data.message || "");
+        if (data.status === "done") {
+          setUpgradeState("done");
+          // Clear status file, then reload to pick up new version
+          fetch("/api/v1/system/upgrade/status", {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${localStorage.getItem("sailbox_token")}` },
+          }).catch(() => {});
+          setTimeout(() => window.location.reload(), 2000);
+        } else if (data.status === "error") {
+          setUpgradeState("error");
+          setUpgradeMsg(data.message);
+        }
+      } catch {
+        // Connection lost during container restart — keep polling, upgrader is still running
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [upgradeState]);
+
+  function handleUpgrade() {
+    setUpgradeState("upgrading");
+    setUpgradeMsg("Starting upgrade...");
+    triggerUpgrade.mutate(undefined, {
+      onError: (err: any) => {
+        setUpgradeState("error");
+        setUpgradeMsg(err?.detail || "Failed to start upgrade");
+      },
+    });
   }
 
   const changelogLines = (v.changelog || "")
@@ -330,6 +375,52 @@ function UpgradeButton({
               </div>
             </div>
 
+            {/* Upgrade progress */}
+            {(upgradeState === "upgrading" || upgradeState === "done") && (
+              <div className="border-t px-6 py-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <svg
+                    role="img"
+                    aria-label="Loading"
+                    className="h-4 w-4 animate-spin text-primary"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                  </svg>
+                  <span className="text-muted-foreground">
+                    {upgradeState === "done" ? "Upgrade complete! Reloading..." : upgradeMsg}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {upgradeState === "error" && (
+              <div className="border-t px-6 py-3 space-y-2">
+                <div className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                  {upgradeMsg}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  You can try upgrading manually via SSH:
+                </p>
+                <code className="block rounded bg-muted px-2 py-1 font-mono text-xs">
+                  {upgradeCmd}
+                </code>
+              </div>
+            )}
+
             {/* Footer */}
             <div className="flex items-center justify-between border-t px-6 py-4">
               <a
@@ -345,16 +436,17 @@ function UpgradeButton({
                   type="button"
                   onClick={() => setOpen(false)}
                   className="rounded-md px-4 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent"
+                  disabled={upgradeState === "upgrading"}
                 >
                   Later
                 </button>
                 <button
                   type="button"
-                  disabled
-                  title="Available after Docker deployment"
-                  className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground opacity-50 cursor-not-allowed"
+                  onClick={handleUpgrade}
+                  disabled={upgradeState === "upgrading" || upgradeState === "done"}
+                  className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Upgrade Now
+                  {upgradeState === "upgrading" ? "Upgrading..." : "Upgrade Now"}
                 </button>
               </div>
             </div>

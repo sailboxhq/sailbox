@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +15,8 @@ import (
 
 	appVersion "github.com/sailboxhq/sailbox/apps/api/internal/version"
 )
+
+const upgradeStatusFile = "/opt/sailbox/upgrade_status.json"
 
 type VersionInfo struct {
 	Current     string `json:"current"`
@@ -23,10 +27,16 @@ type VersionInfo struct {
 	PublishedAt string `json:"published_at"`
 }
 
+type UpgradeStatus struct {
+	Status  string `json:"status"` // idle, upgrading, done, error
+	Message string `json:"message"`
+}
+
 type VersionService struct {
-	logger *slog.Logger
-	mu     sync.RWMutex
-	cached *VersionInfo
+	logger    *slog.Logger
+	mu        sync.RWMutex
+	cached    *VersionInfo
+	upgradeMu sync.Mutex
 }
 
 func NewVersionService(logger *slog.Logger) *VersionService {
@@ -43,7 +53,6 @@ func (s *VersionService) GetVersionInfo(ctx context.Context) *VersionInfo {
 		return s.cached
 	}
 
-	// Return basic info if no cache yet
 	return &VersionInfo{
 		Current: appVersion.Version,
 		Latest:  appVersion.Version,
@@ -51,10 +60,7 @@ func (s *VersionService) GetVersionInfo(ctx context.Context) *VersionInfo {
 }
 
 func (s *VersionService) periodicCheck() {
-	// Check immediately on startup
 	s.checkForUpdate()
-
-	// Then check every hour
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 	for range ticker.C {
@@ -77,7 +83,7 @@ func (s *VersionService) checkForUpdate() {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := notifHTTPClient.Do(req) // reuses shared 30s timeout client
+	resp, err := notifHTTPClient.Do(req)
 	if err != nil {
 		s.logger.Debug("version check: request failed", slog.Any("error", err))
 		s.setCached(appVersion.Version, "", false)
@@ -104,7 +110,6 @@ func (s *VersionService) checkForUpdate() {
 	}
 
 	latest := release.TagName
-
 	updateAvail := appVersion.Version != "dev" && shouldUpdate(latest, appVersion.Version)
 
 	s.mu.Lock()
@@ -116,7 +121,6 @@ func (s *VersionService) checkForUpdate() {
 		Changelog:   release.Body,
 		PublishedAt: release.PublishedAt,
 	}
-
 	s.mu.Unlock()
 
 	if updateAvail {
@@ -124,18 +128,14 @@ func (s *VersionService) checkForUpdate() {
 	}
 }
 
-// shouldUpdate returns true if the user should upgrade.
-// True when: latest > current, OR current is a pre-release of the same version.
 func shouldUpdate(latest, current string) bool {
 	latestClean := strings.TrimPrefix(latest, "v")
 	currentClean := strings.TrimPrefix(current, "v")
 
-	// Same exact string — no update
 	if latestClean == currentClean {
 		return false
 	}
 
-	// Current is pre-release (e.g. v1.1.0-rc1), latest is same base version (v1.1.0) — update
 	if strings.Contains(currentClean, "-") {
 		currentBase := currentClean[:strings.IndexByte(currentClean, '-')]
 		latestBase := latestClean
@@ -150,11 +150,9 @@ func shouldUpdate(latest, current string) bool {
 	return isNewer(latest, current)
 }
 
-// isNewer returns true if latest is a higher semver than current.
 func isNewer(latest, current string) bool {
 	parse := func(v string) (int, int, int) {
 		v = strings.TrimPrefix(v, "v")
-		// Strip pre-release suffix (e.g. "-rc1")
 		if idx := strings.IndexByte(v, '-'); idx != -1 {
 			v = v[:idx]
 		}
@@ -180,6 +178,93 @@ func isNewer(latest, current string) bool {
 	return lc > cc
 }
 
+// ============================================================================
+// Upgrade — spawns a one-shot upgrader container that runs upgrade-lib.sh
+// ============================================================================
+
+// GetUpgradeStatus reads the shared status file written by the upgrader.
+func (s *VersionService) GetUpgradeStatus() UpgradeStatus {
+	data, err := os.ReadFile(upgradeStatusFile)
+	if err != nil {
+		return UpgradeStatus{Status: "idle"}
+	}
+	var st UpgradeStatus
+	if err := json.Unmarshal(data, &st); err != nil {
+		return UpgradeStatus{Status: "idle"}
+	}
+	return st
+}
+
+// ClearUpgradeStatus resets the status file after frontend acknowledges.
+func (s *VersionService) ClearUpgradeStatus() {
+	os.Remove(upgradeStatusFile)
+}
+
+// TriggerUpgrade spawns a one-shot "upgrader" container that runs the shared
+// upgrade-lib.sh script. The upgrader is an independent process — it survives
+// the main sailbox container being replaced, so it can do health checks and rollback.
+func (s *VersionService) TriggerUpgrade() error {
+	s.upgradeMu.Lock()
+	defer s.upgradeMu.Unlock()
+
+	current := s.GetUpgradeStatus()
+	if current.Status == "upgrading" {
+		return fmt.Errorf("upgrade already in progress")
+	}
+
+	// Preflight: verify docker.sock
+	if _, err := os.Stat("/var/run/docker.sock"); err != nil {
+		return fmt.Errorf("Docker socket not mounted — add /var/run/docker.sock volume to the sailbox container")
+	}
+	// Preflight: verify upgrade-lib.sh exists
+	if _, err := os.Stat("/opt/sailbox/upgrade-lib.sh"); err != nil {
+		return fmt.Errorf("upgrade-lib.sh not found at /opt/sailbox — ensure /opt/sailbox is mounted")
+	}
+
+	// Remove stale upgrader container if exists
+	_ = exec.Command("docker", "rm", "-f", "sailbox-upgrader").Run()
+
+	// Write initial status
+	if err := writeUpgradeStatus(UpgradeStatus{Status: "upgrading", Message: "Starting upgrade..."}); err != nil {
+		return fmt.Errorf("cannot persist upgrade state: %w", err)
+	}
+
+	// Spawn upgrader container:
+	// - docker:cli image has docker + docker compose + curl + sh
+	// - Host network for healthz checks on localhost:3000
+	// - Mounts docker.sock (to manage containers) and /opt/sailbox (shared state + scripts)
+	// - 10 minute timeout via --stop-timeout
+	// - Runs the same upgrade-lib.sh that upgrade.sh uses
+	cmd := exec.Command("docker", "run", "-d", "--rm",
+		"--name", "sailbox-upgrader",
+		"--network", "host",
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"-v", "/opt/sailbox:/opt/sailbox",
+		"docker:cli",
+		"sh", "-c", ". /opt/sailbox/upgrade-lib.sh && run_upgrade container",
+	)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := fmt.Sprintf("Failed to start upgrader: %s", strings.TrimSpace(string(out)))
+		s.logger.Error("upgrade: "+msg, slog.Any("error", err))
+		_ = writeUpgradeStatus(UpgradeStatus{Status: "error", Message: msg})
+		return fmt.Errorf("%s", msg)
+	}
+
+	containerID := strings.TrimSpace(string(out))
+	s.logger.Info("upgrade: upgrader container started", slog.String("container_id", containerID[:12]))
+	return nil
+}
+
+func writeUpgradeStatus(st UpgradeStatus) error {
+	data, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(upgradeStatusFile, data, 0o644)
+}
+
 func (s *VersionService) setCached(current, latest string, updateAvail bool) {
 	s.mu.Lock()
 	s.cached = &VersionInfo{
@@ -187,6 +272,5 @@ func (s *VersionService) setCached(current, latest string, updateAvail bool) {
 		Latest:      latest,
 		UpdateAvail: updateAvail,
 	}
-
 	s.mu.Unlock()
 }
