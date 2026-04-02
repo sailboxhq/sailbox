@@ -282,12 +282,12 @@ func (ae *AlertEvaluator) builtinRules() []AlertRule {
 				}
 				// Aggregate evictions into one alert
 				if evictedCount > 0 {
-					source := evictedNode
-					if source == "" {
-						source = "cluster"
+					node := evictedNode
+					if node == "" {
+						node = "cluster"
 					}
 					firings = append(firings, AlertFiring{
-						SourceName: "Node/DiskPressure",
+						SourceName: node,
 						Message:    fmt.Sprintf("%d pods evicted due to DiskPressure — free disk space on affected nodes", evictedCount),
 					})
 				}

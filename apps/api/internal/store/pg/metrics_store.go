@@ -102,7 +102,7 @@ func (s *eventStore) UpsertBatch(ctx context.Context, events []model.MetricEvent
 }
 
 func (s *eventStore) List(ctx context.Context, q store.EventQuery) ([]model.MetricEvent, int, error) {
-	page, perPage := q.ListParams.Page, q.ListParams.PerPage
+	page, perPage := q.Page, q.PerPage
 	if page < 1 {
 		page = 1
 	}
@@ -198,7 +198,7 @@ func (s *alertStore) ListActive(ctx context.Context) ([]model.MetricAlert, error
 }
 
 func (s *alertStore) List(ctx context.Context, q store.AlertQuery) ([]model.MetricAlert, int, error) {
-	page, perPage := q.ListParams.Page, q.ListParams.PerPage
+	page, perPage := q.Page, q.PerPage
 	if page < 1 {
 		page = 1
 	}

@@ -48,7 +48,7 @@ func (h *TerminalHandler) Handle(c *gin.Context) {
 		h.logger.Error("websocket upgrade failed", slog.Any("error", err))
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	opts := orchestrator.ExecOpts{
 		Command: []string{"/bin/sh"},
@@ -57,10 +57,10 @@ func (h *TerminalHandler) Handle(c *gin.Context) {
 
 	session, err := h.orch.ExecTerminal(c.Request.Context(), app, opts)
 	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()+"\r\n"))
+		_ = conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()+"\r\n"))
 		return
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	h.logger.Info("terminal session started", slog.String("app", app.Name))
 
@@ -87,7 +87,7 @@ func (h *TerminalHandler) Handle(c *gin.Context) {
 		for {
 			msgType, msg, err := conn.ReadMessage()
 			if err != nil {
-				session.Close()
+				_ = session.Close()
 				return
 			}
 
@@ -99,12 +99,12 @@ func (h *TerminalHandler) Handle(c *gin.Context) {
 					Rows uint16 `json:"rows"`
 				}
 				if json.Unmarshal(msg, &resize) == nil && resize.Type == "resize" {
-					session.Resize(resize.Cols, resize.Rows)
+					_ = session.Resize(resize.Cols, resize.Rows)
 					continue
 				}
 
 				// Regular input
-				session.Write(msg)
+				_, _ = session.Write(msg)
 			}
 		}
 	}()

@@ -191,8 +191,8 @@ func (s *SystemBackupService) runBackup(backup *model.SystemBackup, cfg *SystemB
 		return
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpPath)
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// Parse database URL
 	host, port, user, password, dbname, parseErr := parseDatabaseURL(s.dbURL)
@@ -466,8 +466,8 @@ func (s *SystemBackupService) RestoreFromS3(ctx context.Context, s3 orchestrator
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpPath)
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	// Download from S3
 	dlCmd := exec.CommandContext(ctx, "aws", "s3", "cp",

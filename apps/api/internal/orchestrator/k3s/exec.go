@@ -73,7 +73,7 @@ func (o *Orchestrator) ExecTerminal(ctx context.Context, app *model.Application,
 
 	// Run the exec in a goroutine
 	go func() {
-		defer session.stdoutW.Close()
+		defer func() { _ = session.stdoutW.Close() }()
 		err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 			Stdin:             session.stdinR,
 			Stdout:            session.stdoutW,
@@ -82,7 +82,7 @@ func (o *Orchestrator) ExecTerminal(ctx context.Context, app *model.Application,
 			TerminalSizeQueue: session,
 		})
 		if err != nil {
-			session.stdoutW.Write([]byte(fmt.Sprintf("\r\nSession ended: %v\r\n", err)))
+			_, _ = fmt.Fprintf(session.stdoutW, "\r\nSession ended: %v\r\n", err)
 		}
 	}()
 
@@ -129,9 +129,9 @@ func (s *terminalSession) Close() error {
 		return nil
 	}
 	s.closed = true
-	s.stdinW.Close()
-	s.stdinR.Close()
-	s.stdoutR.Close()
+	_ = s.stdinW.Close()
+	_ = s.stdinR.Close()
+	_ = s.stdoutR.Close()
 	if s.sizeChan != nil {
 		close(s.sizeChan)
 	}

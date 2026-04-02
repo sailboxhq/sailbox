@@ -498,7 +498,7 @@ func init() {
 		fmt.Println("  [down] dropping all sailbox tables...")
 
 		// Metrics schema
-		db.ExecContext(ctx, "DROP SCHEMA IF EXISTS metrics CASCADE")
+		_, _ = db.ExecContext(ctx, "DROP SCHEMA IF EXISTS metrics CASCADE")
 
 		// Tables in reverse dependency order
 		tables := []string{
@@ -512,10 +512,10 @@ func init() {
 			"settings",
 		}
 		for _, t := range tables {
-			db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", t))
+			_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", t))
 		}
-		db.ExecContext(ctx, "DROP FUNCTION IF EXISTS update_updated_at() CASCADE")
-		db.ExecContext(ctx, "DROP FUNCTION IF EXISTS notify_change() CASCADE")
+		_, _ = db.ExecContext(ctx, "DROP FUNCTION IF EXISTS update_updated_at() CASCADE")
+		_, _ = db.ExecContext(ctx, "DROP FUNCTION IF EXISTS notify_change() CASCADE")
 		return nil
 	})
 }

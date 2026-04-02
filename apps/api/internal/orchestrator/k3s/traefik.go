@@ -3,10 +3,12 @@ package k3s
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -148,6 +150,66 @@ func (o *Orchestrator) GetTraefikStatus(ctx context.Context) (*orchestrator.Trae
 		Restarts: restarts,
 		Age:      age,
 	}, nil
+}
+
+var traefikMiddlewareGVR = schema.GroupVersionResource{
+	Group:    "traefik.io",
+	Version:  "v1alpha1",
+	Resource: "middlewares",
+}
+
+const redirectMiddlewareName = "redirect-https"
+
+// RedirectHTTPSMiddlewareRef returns the Traefik annotation value for referencing
+// the redirect-https middleware in the given namespace.
+func RedirectHTTPSMiddlewareRef(namespace string) string {
+	return fmt.Sprintf("%s-%s@kubernetescrd", namespace, redirectMiddlewareName)
+}
+
+// EnsureRedirectHTTPSMiddleware creates a RedirectScheme middleware in the given
+// namespace if it does not already exist. The middleware redirects HTTP → HTTPS
+// with port "443" to avoid leaking Traefik's internal listener port.
+func (o *Orchestrator) EnsureRedirectHTTPSMiddleware(ctx context.Context, namespace string) error {
+	dynClient, err := dynamic.NewForConfig(o.config)
+	if err != nil {
+		return fmt.Errorf("create dynamic client: %w", err)
+	}
+
+	_, err = dynClient.Resource(traefikMiddlewareGVR).Namespace(namespace).Get(ctx, redirectMiddlewareName, metav1.GetOptions{})
+	if err == nil {
+		return nil // already exists
+	}
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("get middleware %s/%s: %w", namespace, redirectMiddlewareName, err)
+	}
+
+	mw := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "traefik.io/v1alpha1",
+			"kind":       "Middleware",
+			"metadata": map[string]interface{}{
+				"name":      redirectMiddlewareName,
+				"namespace": namespace,
+				"labels": map[string]interface{}{
+					"app.kubernetes.io/managed-by": "sailbox",
+				},
+			},
+			"spec": map[string]interface{}{
+				"redirectScheme": map[string]interface{}{
+					"scheme":    "https",
+					"permanent": true,
+					"port":      "443",
+				},
+			},
+		},
+	}
+
+	_, err = dynClient.Resource(traefikMiddlewareGVR).Namespace(namespace).Create(ctx, mw, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("create middleware %s/%s: %w", namespace, redirectMiddlewareName, err)
+	}
+	o.logger.Info("redirect-https middleware created", slog.String("namespace", namespace))
+	return nil
 }
 
 // marshalSpec extracts and serializes only the spec section of a K8s object.

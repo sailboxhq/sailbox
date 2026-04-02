@@ -446,9 +446,11 @@ type CleanupInspector interface {
 	CleanupStaleReplicaSets(ctx context.Context) (*CleanupResult, error)
 	CleanupCompletedJobs(ctx context.Context) (*CleanupResult, error)
 	// GetOrphanIngresses returns sailbox-managed ingresses not in the provided valid hosts set.
-	GetOrphanIngresses(ctx context.Context, validHosts map[string]bool) ([]string, error)
+	// systemIngresses maps "namespace/name" → expected host for system-managed ingresses
+	// (e.g. the panel) that should be validated by resource identity, not the global host list.
+	GetOrphanIngresses(ctx context.Context, validHosts map[string]bool, systemIngresses map[string]string) ([]string, error)
 	// CleanupOrphanIngresses deletes sailbox-managed ingresses not in the valid hosts set.
-	CleanupOrphanIngresses(ctx context.Context, validHosts map[string]bool) (*CleanupResult, error)
+	CleanupOrphanIngresses(ctx context.Context, validHosts map[string]bool, systemIngresses map[string]string) (*CleanupResult, error)
 }
 
 type CleanupStats struct {

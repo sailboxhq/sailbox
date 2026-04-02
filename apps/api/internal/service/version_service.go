@@ -89,7 +89,7 @@ func (s *VersionService) checkForUpdate() {
 		s.setCached(appVersion.Version, "", false)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		s.logger.Debug("version check: non-200 response", slog.Int("status", resp.StatusCode))
@@ -197,7 +197,7 @@ func (s *VersionService) GetUpgradeStatus() UpgradeStatus {
 
 // ClearUpgradeStatus resets the status file after frontend acknowledges.
 func (s *VersionService) ClearUpgradeStatus() {
-	os.Remove(upgradeStatusFile)
+	_ = os.Remove(upgradeStatusFile)
 }
 
 // TriggerUpgrade spawns a one-shot "upgrader" container that runs the shared
@@ -224,7 +224,7 @@ func (s *VersionService) TriggerUpgrade() error {
 
 	// Preflight: verify docker.sock
 	if _, err := os.Stat("/var/run/docker.sock"); err != nil {
-		return fmt.Errorf("Docker socket not mounted — add /var/run/docker.sock volume to the sailbox container")
+		return fmt.Errorf("docker socket not mounted — add /var/run/docker.sock volume to the sailbox container")
 	}
 	// Preflight: verify upgrade-lib.sh exists
 	if _, err := os.Stat("/opt/sailbox/upgrade-lib.sh"); err != nil {

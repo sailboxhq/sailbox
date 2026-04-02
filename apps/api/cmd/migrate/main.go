@@ -33,7 +33,7 @@ func main() {
 		logger.Error("failed to connect to database", slog.Any("error", err))
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	migrator := migrate.NewMigrator(store.DB(), migrations.Migrations)
 	ctx := context.Background()

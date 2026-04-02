@@ -340,12 +340,12 @@ func jobCompletionTime(j *batchv1.Job) *time.Time {
 	return nil
 }
 
-func (o *Orchestrator) GetOrphanIngresses(ctx context.Context, validHosts map[string]bool) ([]string, error) {
-	return o.findOrphanIngresses(ctx, validHosts)
+func (o *Orchestrator) GetOrphanIngresses(ctx context.Context, validHosts map[string]bool, systemIngresses map[string]string) ([]string, error) {
+	return o.findOrphanIngresses(ctx, validHosts, systemIngresses)
 }
 
-func (o *Orchestrator) CleanupOrphanIngresses(ctx context.Context, validHosts map[string]bool) (*orchestrator.CleanupResult, error) {
-	orphans, err := o.findOrphanIngresses(ctx, validHosts)
+func (o *Orchestrator) CleanupOrphanIngresses(ctx context.Context, validHosts map[string]bool, systemIngresses map[string]string) (*orchestrator.CleanupResult, error) {
+	orphans, err := o.findOrphanIngresses(ctx, validHosts, systemIngresses)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +371,7 @@ func (o *Orchestrator) CleanupOrphanIngresses(ctx context.Context, validHosts ma
 	return &orchestrator.CleanupResult{Deleted: deleted, Message: msg}, nil
 }
 
-func (o *Orchestrator) findOrphanIngresses(ctx context.Context, validHosts map[string]bool) ([]string, error) {
+func (o *Orchestrator) findOrphanIngresses(ctx context.Context, validHosts map[string]bool, systemIngresses map[string]string) ([]string, error) {
 	var allIngresses []networkingv1.Ingress
 
 	// List sailbox-managed ingresses across all namespaces
@@ -391,11 +391,30 @@ func (o *Orchestrator) findOrphanIngresses(ctx context.Context, validHosts map[s
 
 	var orphans []string
 	for _, ing := range allIngresses {
-		for _, rule := range ing.Spec.Rules {
-			if !validHosts[rule.Host] {
-				orphans = append(orphans, ing.Namespace+"/"+ing.Name)
-				break
+		key := ing.Namespace + "/" + ing.Name
+		isOrphan := false
+
+		// System ingresses (e.g. panel) are validated by resource identity:
+		// their host must match the currently configured expected host.
+		if expectedHost, ok := systemIngresses[key]; ok {
+			for _, rule := range ing.Spec.Rules {
+				if rule.Host != expectedHost {
+					isOrphan = true
+					break
+				}
 			}
+		} else {
+			// App ingresses are validated against the global valid hosts set.
+			for _, rule := range ing.Spec.Rules {
+				if !validHosts[rule.Host] {
+					isOrphan = true
+					break
+				}
+			}
+		}
+
+		if isOrphan {
+			orphans = append(orphans, key)
 		}
 	}
 	return orphans, nil

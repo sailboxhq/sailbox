@@ -27,61 +27,31 @@ func (o *Orchestrator) CreateIngress(ctx context.Context, domain *model.Domain, 
 	ns := appNamespace(app)
 	name := ingressName(appK8sName(app), domain.Host)
 
-	annotations := map[string]string{
-		"kubernetes.io/ingress.class": "traefik",
-	}
-
-	// TLS with Let's Encrypt (skip for localhost/dev domains)
-	if domain.TLS && domain.AutoCert && !isDevDomain(domain.Host) {
-		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-		annotations["traefik.ingress.kubernetes.io/router.tls.certresolver"] = "letsencrypt"
-	}
-	// Always listen on both HTTP and HTTPS so browsers can reach the domain
-	// regardless of which protocol the user types. Force HTTPS (below) handles redirect.
-	annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
-
-	// Force HTTPS redirect
-	if domain.ForceHTTPS {
-		annotations["traefik.ingress.kubernetes.io/router.middlewares"] = "default-redirect-https@kubernetescrd"
-	}
-
 	// Backend port = first service port (what the K8s Service exposes)
 	backendPort := int32(80)
 	if len(app.Ports) > 0 {
 		backendPort = int32(app.Ports[0].ServicePort)
 	}
 
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "sailbox",
+		"sailbox/app-id":               app.ID.String(),
+		"sailbox/domain-id":            domain.ID.String(),
+	}
+
 	pathType := networkingv1.PathTypePrefix
-	ingress := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   ns,
-			Annotations: annotations,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "sailbox",
-				"sailbox/app-id":               app.ID.String(),
-				"sailbox/domain-id":            domain.ID.String(),
-			},
-		},
-		Spec: networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{
-				{
-					Host: domain.Host,
-					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{
-							Paths: []networkingv1.HTTPIngressPath{
-								{
-									Path:     "/",
-									PathType: &pathType,
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: appK8sName(app),
-											Port: networkingv1.ServiceBackendPort{
-												Number: backendPort,
-											},
-										},
-									},
-								},
+	rule := networkingv1.IngressRule{
+		Host: domain.Host,
+		IngressRuleValue: networkingv1.IngressRuleValue{
+			HTTP: &networkingv1.HTTPIngressRuleValue{
+				Paths: []networkingv1.HTTPIngressPath{
+					{
+						Path:     "/",
+						PathType: &pathType,
+						Backend: networkingv1.IngressBackend{
+							Service: &networkingv1.IngressServiceBackend{
+								Name: appK8sName(app),
+								Port: networkingv1.ServiceBackendPort{Number: backendPort},
 							},
 						},
 					},
@@ -90,17 +60,47 @@ func (o *Orchestrator) CreateIngress(ctx context.Context, domain *model.Domain, 
 		},
 	}
 
-	// Add TLS spec (skip for dev domains)
-	// Note: no SecretName — Traefik's certresolver manages certs in acme.json,
-	// not via K8s Secrets. Setting SecretName would cause Traefik to look for a
-	// non-existent secret and fall back to its default self-signed cert.
-	if domain.TLS && !isDevDomain(domain.Host) {
-		ingress.Spec.TLS = []networkingv1.IngressTLS{
-			{
-				Hosts: []string{domain.Host},
-			},
-		}
+	needsTLS := domain.TLS && domain.AutoCert && !isDevDomain(domain.Host)
+
+	// Build the primary ingress (HTTPS for TLS domains, HTTP for dev domains)
+	annotations := map[string]string{
+		"kubernetes.io/ingress.class": "traefik",
 	}
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Labels:    labels,
+		},
+		Spec: networkingv1.IngressSpec{Rules: []networkingv1.IngressRule{rule}},
+	}
+
+	httpName := name + "-http"
+
+	if needsTLS {
+		// Primary ingress serves HTTPS only (websecure entrypoint)
+		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+		annotations["traefik.ingress.kubernetes.io/router.tls.certresolver"] = "letsencrypt"
+		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "websecure"
+		ingress.Spec.TLS = []networkingv1.IngressTLS{{Hosts: []string{domain.Host}}}
+
+		// Companion HTTP redirect ingress — Traefik v3 does not create an HTTP
+		// route for an Ingress with a TLS spec, so a separate Ingress is needed.
+		if domain.ForceHTTPS {
+			if err := o.ensureHTTPRedirectIngress(ctx, ns, httpName, labels, rule); err != nil {
+				o.logger.Warn("http redirect ingress not applied", slog.String("ns", ns), slog.Any("error", err))
+			}
+		} else {
+			// ForceHTTPS disabled — clean up companion if it exists
+			o.deleteIngressIfExists(ctx, ns, httpName)
+		}
+	} else {
+		// Dev/sslip.io domains: single ingress on both entrypoints, no TLS.
+		// Clean up any leftover companion redirect ingress from a prior TLS config.
+		o.deleteIngressIfExists(ctx, ns, httpName)
+		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
+	}
+	ingress.Annotations = annotations
 
 	existing, err := o.client.NetworkingV1().Ingresses(ns).Get(ctx, name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) {
@@ -221,6 +221,46 @@ func (o *Orchestrator) SyncIngressPorts(ctx context.Context, app *model.Applicat
 const panelIngressName = "sailbox-panel"
 const panelNamespace = "sailbox"
 
+// deleteIngressIfExists silently deletes an ingress. No error if it doesn't exist.
+func (o *Orchestrator) deleteIngressIfExists(ctx context.Context, ns, name string) {
+	err := o.client.NetworkingV1().Ingresses(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		o.logger.Warn("failed to delete stale ingress", slog.String("name", name), slog.String("ns", ns), slog.Any("error", err))
+	}
+}
+
+// ensureHTTPRedirectIngress creates or updates an HTTP-only Ingress that
+// redirects to HTTPS via a RedirectScheme middleware. Used as the companion
+// to a TLS Ingress (dual-ingress pattern for Traefik v3).
+func (o *Orchestrator) ensureHTTPRedirectIngress(ctx context.Context, ns, name string, labels map[string]string, rule networkingv1.IngressRule) error {
+	if err := o.EnsureRedirectHTTPSMiddleware(ctx, ns); err != nil {
+		return fmt.Errorf("ensure middleware: %w", err)
+	}
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+			Labels:    labels,
+			Annotations: map[string]string{
+				"kubernetes.io/ingress.class":                      "traefik",
+				"traefik.ingress.kubernetes.io/router.entrypoints": "web",
+				"traefik.ingress.kubernetes.io/router.middlewares": RedirectHTTPSMiddlewareRef(ns),
+			},
+		},
+		Spec: networkingv1.IngressSpec{Rules: []networkingv1.IngressRule{rule}},
+	}
+	existing, err := o.client.NetworkingV1().Ingresses(ns).Get(ctx, name, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		_, err = o.client.NetworkingV1().Ingresses(ns).Create(ctx, ingress, metav1.CreateOptions{})
+	} else if err == nil {
+		existing.Annotations = ingress.Annotations
+		existing.Labels = ingress.Labels
+		existing.Spec = ingress.Spec
+		_, err = o.client.NetworkingV1().Ingresses(ns).Update(ctx, existing, metav1.UpdateOptions{})
+	}
+	return err
+}
+
 func (o *Orchestrator) EnsurePanelIngress(ctx context.Context, domain, httpsEmail string) error {
 	// Ensure the panel namespace exists
 	if err := o.ensureNamespace(ctx, panelNamespace); err != nil {
@@ -232,48 +272,24 @@ func (o *Orchestrator) EnsurePanelIngress(ctx context.Context, domain, httpsEmai
 		return fmt.Errorf("panel service: %w", err)
 	}
 
-	annotations := map[string]string{
-		"kubernetes.io/ingress.class": "traefik",
-	}
-
-	if !isDevDomain(domain) {
-		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-		annotations["traefik.ingress.kubernetes.io/router.tls.certresolver"] = "letsencrypt"
-		// Panel must always force HTTPS in production — no plaintext admin access
-		annotations["traefik.ingress.kubernetes.io/router.middlewares"] = "default-redirect-https@kubernetescrd"
-	}
-	annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
-
 	pathType := networkingv1.PathTypePrefix
 	port := int32(3000)
-
-	ingress := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        panelIngressName,
-			Namespace:   panelNamespace,
-			Annotations: annotations,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "sailbox",
-				"app.kubernetes.io/component":  "panel",
-			},
-		},
-		Spec: networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{
-				{
-					Host: domain,
-					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{
-							Paths: []networkingv1.HTTPIngressPath{
-								{
-									Path:     "/",
-									PathType: &pathType,
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: "sailbox",
-											Port: networkingv1.ServiceBackendPort{Number: port},
-										},
-									},
-								},
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "sailbox",
+		"app.kubernetes.io/component":  "panel",
+	}
+	rule := networkingv1.IngressRule{
+		Host: domain,
+		IngressRuleValue: networkingv1.IngressRuleValue{
+			HTTP: &networkingv1.HTTPIngressRuleValue{
+				Paths: []networkingv1.HTTPIngressPath{
+					{
+						Path:     "/",
+						PathType: &pathType,
+						Backend: networkingv1.IngressBackend{
+							Service: &networkingv1.IngressServiceBackend{
+								Name: "sailbox",
+								Port: networkingv1.ServiceBackendPort{Number: port},
 							},
 						},
 					},
@@ -282,8 +298,37 @@ func (o *Orchestrator) EnsurePanelIngress(ctx context.Context, domain, httpsEmai
 		},
 	}
 
-	// Add TLS block when HTTPS is enabled (Traefik ACME manages the cert)
-	if httpsEmail != "" {
+	needsTLS := !isDevDomain(domain)
+
+	annotations := map[string]string{
+		"kubernetes.io/ingress.class": "traefik",
+	}
+	if needsTLS {
+		annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+		annotations["traefik.ingress.kubernetes.io/router.tls.certresolver"] = "letsencrypt"
+		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "websecure"
+
+		// Companion HTTP redirect ingress for production panel
+		if err := o.ensureHTTPRedirectIngress(ctx, panelNamespace, panelIngressName+"-http", labels, rule); err != nil {
+			o.logger.Warn("panel http redirect ingress not applied", slog.Any("error", err))
+		}
+	} else {
+		// Dev domain: clean up any leftover companion redirect ingress
+		o.deleteIngressIfExists(ctx, panelNamespace, panelIngressName+"-http")
+		annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
+	}
+
+	ingress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        panelIngressName,
+			Namespace:   panelNamespace,
+			Annotations: annotations,
+			Labels:      labels,
+		},
+		Spec: networkingv1.IngressSpec{Rules: []networkingv1.IngressRule{rule}},
+	}
+
+	if needsTLS && httpsEmail != "" {
 		ingress.Spec.TLS = []networkingv1.IngressTLS{
 			{Hosts: []string{domain}},
 		}
@@ -369,6 +414,12 @@ func (o *Orchestrator) ensurePanelService(ctx context.Context) error {
 }
 
 func (o *Orchestrator) DeletePanelIngress(ctx context.Context) error {
+	// Delete the companion HTTP redirect ingress first
+	httpName := panelIngressName + "-http"
+	if err := o.client.NetworkingV1().Ingresses(panelNamespace).Delete(ctx, httpName, metav1.DeleteOptions{}); err != nil && !k8serrors.IsNotFound(err) {
+		o.logger.Warn("failed to delete panel http redirect ingress", slog.Any("error", err))
+	}
+
 	err := o.client.NetworkingV1().Ingresses(panelNamespace).Delete(ctx, panelIngressName, metav1.DeleteOptions{})
 	if k8serrors.IsNotFound(err) {
 		return nil
@@ -533,7 +584,7 @@ func getCertExpiryViaTLS(host string) (*time.Time, error) {
 			continue
 		}
 		certs := conn.ConnectionState().PeerCertificates
-		conn.Close()
+		_ = conn.Close()
 		if len(certs) == 0 {
 			continue
 		}

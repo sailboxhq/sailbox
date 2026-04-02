@@ -56,7 +56,7 @@ func validateDomainHost(host string) error {
 			return fmt.Errorf("label %q must not start or end with a hyphen", label)
 		}
 		for _, c := range label {
-			if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
 				return fmt.Errorf("invalid character %q in hostname", c)
 			}
 		}

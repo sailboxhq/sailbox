@@ -12,7 +12,3 @@ func intOrString(val int) *intstr.IntOrString {
 func int32Ptr(i int32) *int32 {
 	return &i
 }
-
-func stringPtr(s string) *string {
-	return &s
-}

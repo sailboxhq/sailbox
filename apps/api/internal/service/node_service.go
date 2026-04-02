@@ -198,7 +198,8 @@ func (s *NodeService) runInitialize(node *model.ServerNode) {
 		Timeout: 30 * time.Second,
 	}
 
-	if node.AuthType == "password" {
+	switch node.AuthType {
+	case "password":
 		var plainPassword string
 		if strings.HasPrefix(node.Password, encPrefix) {
 			// Encrypted password — decrypt with current key
@@ -218,7 +219,7 @@ func (s *NodeService) runInitialize(node *model.ServerNode) {
 			}
 		}
 		config.Auth = []ssh.AuthMethod{ssh.Password(plainPassword)}
-	} else if node.AuthType == "ssh_key" {
+	case "ssh_key":
 		// Load SSH key from shared_resources
 		if node.SSHKeyID != nil {
 			resource, err := s.store.SharedResources().GetByID(ctx, *node.SSHKeyID)
@@ -256,7 +257,7 @@ func (s *NodeService) runInitialize(node *model.ServerNode) {
 		s.finishWithError(ctx, nodeID, "SSH connection failed: "+err.Error())
 		return
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	s.broadcast(nodeID, "Connected successfully.")
 
@@ -310,7 +311,7 @@ func (s *NodeService) runInitialize(node *model.ServerNode) {
 		s.finishWithError(ctx, nodeID, "Failed to create SSH session: "+err.Error())
 		return
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {

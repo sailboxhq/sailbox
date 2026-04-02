@@ -32,7 +32,7 @@ func (h *NodeLogsHandler) Handle(c *gin.Context) {
 		h.logger.Error("websocket upgrade failed", slog.Any("error", err))
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Read pump for disconnect detection
 	ctx, cancel := context.WithCancel(c.Request.Context())

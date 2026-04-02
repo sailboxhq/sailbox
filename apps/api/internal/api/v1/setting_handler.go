@@ -102,7 +102,7 @@ func (h *SettingHandler) VerifyDomain(c *gin.Context) {
 		httputil.RespondOK(c, result)
 		return
 	}
-	conn.Close()
+	_ = conn.Close()
 	result["reachable"] = true
 
 	// Step 3: Certificate status
@@ -116,7 +116,7 @@ func (h *SettingHandler) VerifyDomain(c *gin.Context) {
 		httputil.RespondOK(c, result)
 		return
 	}
-	defer tlsConn.Close()
+	defer func() { _ = tlsConn.Close() }()
 
 	certs := tlsConn.ConnectionState().PeerCertificates
 	if len(certs) == 0 {

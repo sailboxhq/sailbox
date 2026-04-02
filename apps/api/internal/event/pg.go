@@ -77,7 +77,7 @@ func (s *PGSubscriber) connectLoop() {
 
 func (s *PGSubscriber) listen() error {
 	ln := pgdriver.NewListener(s.db)
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	if err := ln.Listen(context.Background(), channel); err != nil {
 		return err

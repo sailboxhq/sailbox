@@ -372,7 +372,7 @@ func (n *NoopOrchestrator) GetNodeMetrics(ctx context.Context) ([]NodeMetrics, e
 func (n *NoopOrchestrator) StreamLogs(ctx context.Context, app *model.Application, opts LogOpts) (io.ReadCloser, error) {
 	r, w := io.Pipe()
 	go func() {
-		defer w.Close()
+		defer func() { _ = w.Close() }()
 		lines := []string{
 			fmt.Sprintf("[sailbox] Pod %s-0 started", app.Name),
 			fmt.Sprintf("[sailbox] Pulling image: %s", app.DockerImage),
@@ -386,7 +386,7 @@ func (n *NoopOrchestrator) StreamLogs(ctx context.Context, app *model.Applicatio
 			"[nginx] 2026/03/24 15:00:00 [notice] 1#1: start worker processes",
 		}
 		for _, line := range lines {
-			fmt.Fprintln(w, line)
+			_, _ = fmt.Fprintln(w, line)
 			time.Sleep(300 * time.Millisecond)
 		}
 		// Keep producing periodic log lines
@@ -395,7 +395,7 @@ func (n *NoopOrchestrator) StreamLogs(ctx context.Context, app *model.Applicatio
 		i := 0
 		for range ticker.C {
 			i++
-			fmt.Fprintf(w, "[nginx] 10.42.0.1 - - [24/Mar/2026:15:%02d:%02d +0000] \"GET / HTTP/1.1\" 200 615\n", i/60, i%60)
+			_, _ = fmt.Fprintf(w, "[nginx] 10.42.0.1 - - [24/Mar/2026:15:%02d:%02d +0000] \"GET / HTTP/1.1\" 200 615\n", i/60, i%60)
 		}
 	}()
 	return r, nil
@@ -437,8 +437,8 @@ func (n *NoopOrchestrator) ClearBuildCache(ctx context.Context, app *model.Appli
 func (n *NoopOrchestrator) GetBuildLogs(ctx context.Context, jobName, namespace string) (io.ReadCloser, error) {
 	r, w := io.Pipe()
 	go func() {
-		defer w.Close()
-		fmt.Fprintln(w, "[noop] Build logs not available in noop mode")
+		defer func() { _ = w.Close() }()
+		_, _ = fmt.Fprintln(w, "[noop] Build logs not available in noop mode")
 	}()
 	return r, nil
 }
@@ -660,12 +660,12 @@ func (n *NoopOrchestrator) CleanupCompletedJobs(ctx context.Context) (*CleanupRe
 	return &CleanupResult{Deleted: 1, Message: "Deleted 1 completed jobs"}, nil
 }
 
-func (n *NoopOrchestrator) GetOrphanIngresses(ctx context.Context, validHosts map[string]bool) ([]string, error) {
+func (n *NoopOrchestrator) GetOrphanIngresses(ctx context.Context, validHosts map[string]bool, _ map[string]string) ([]string, error) {
 	n.logger.Info("[noop] get orphan ingresses")
 	return []string{"default/orphan-ingress-1"}, nil
 }
 
-func (n *NoopOrchestrator) CleanupOrphanIngresses(ctx context.Context, validHosts map[string]bool) (*CleanupResult, error) {
+func (n *NoopOrchestrator) CleanupOrphanIngresses(ctx context.Context, validHosts map[string]bool, _ map[string]string) (*CleanupResult, error) {
 	n.logger.Info("[noop] cleanup orphan ingresses")
 	return &CleanupResult{Deleted: 1, Message: "Deleted 1 orphan ingresses"}, nil
 }
@@ -681,7 +681,7 @@ func newNoopTerminal(name string) *noopTerminal {
 	t := &noopTerminal{reader: r, writer: w, name: name}
 	// Write welcome message
 	go func() {
-		w.Write([]byte(fmt.Sprintf("sailbox-noop@%s:~$ ", name)))
+		_, _ = fmt.Fprintf(w, "sailbox-noop@%s:~$ ", name)
 	}()
 	return t
 }
@@ -693,9 +693,9 @@ func (t *noopTerminal) Read(p []byte) (int, error) {
 func (t *noopTerminal) Write(p []byte) (int, error) {
 	// Echo input back and add prompt
 	go func() {
-		t.writer.Write(p)
+		_, _ = t.writer.Write(p)
 		if len(p) > 0 && p[len(p)-1] == '\r' {
-			t.writer.Write([]byte(fmt.Sprintf("\nsailbox-noop@%s:~$ ", t.name)))
+			_, _ = fmt.Fprintf(t.writer, "\nsailbox-noop@%s:~$ ", t.name)
 		}
 	}()
 	return len(p), nil
@@ -703,7 +703,7 @@ func (t *noopTerminal) Write(p []byte) (int, error) {
 
 func (t *noopTerminal) Resize(width, height uint16) error { return nil }
 func (t *noopTerminal) Close() error {
-	t.writer.Close()
-	t.reader.Close()
+	_ = t.writer.Close()
+	_ = t.reader.Close()
 	return nil
 }

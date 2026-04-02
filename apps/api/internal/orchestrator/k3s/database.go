@@ -157,13 +157,15 @@ func (o *Orchestrator) DeployDatabase(ctx context.Context, db *model.ManagedData
 	existing, err := o.client.CoreV1().Secrets(ns).Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
-			_, err = o.client.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{})
+			if _, createErr := o.client.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{}); createErr != nil {
+				return createErr
+			}
 		}
 	} else {
 		// Reuse existing password to avoid credential mismatch on retry
 		if p, ok := existing.Data["SAILBOX_PASSWORD"]; ok {
 			password = string(p)
-			connStr = dbConnectionString(db.Engine, host, port, password, db.DatabaseName)
+			_ = dbConnectionString(db.Engine, host, port, password, db.DatabaseName) // connection string recomputed if needed
 		}
 	}
 
@@ -699,43 +701,6 @@ func (o *Orchestrator) getDatabasePodIP(ctx context.Context, db *model.ManagedDa
 		}
 	}
 	return "", fmt.Errorf("no running pod found for database %q", db.Name)
-}
-
-// ensureDatabaseService creates the ClusterIP Service if it doesn't exist.
-// This is needed because backup/restore Jobs require DNS resolution to connect.
-func (o *Orchestrator) ensureDatabaseService(ctx context.Context, db *model.ManagedDatabase) error {
-	ns := dbNamespace(db)
-	k8sName := dbK8sName(db)
-	port := enginePorts[db.Engine]
-
-	_, err := o.client.CoreV1().Services(ns).Get(ctx, k8sName, metav1.GetOptions{})
-	if err == nil {
-		return nil // already exists
-	}
-	if !errors.IsNotFound(err) {
-		return err
-	}
-
-	labels := map[string]string{
-		"app.kubernetes.io/name":       k8sName,
-		"app.kubernetes.io/managed-by": "sailbox",
-		"sailbox/db-id":                db.ID.String(),
-		"sailbox/engine":               string(db.Engine),
-	}
-
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: k8sName, Namespace: ns, Labels: labels},
-		Spec: corev1.ServiceSpec{
-			Selector: labels,
-			Ports:    []corev1.ServicePort{{Port: port, TargetPort: *intOrString(int(port))}},
-		},
-	}
-	_, err = o.client.CoreV1().Services(ns).Create(ctx, svc, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("create service: %w", err)
-	}
-	o.logger.Info("created missing database service", slog.String("name", k8sName))
-	return nil
 }
 
 func dbEnvSecret(engine model.DBEngine, password, dbName string) map[string]string {

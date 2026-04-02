@@ -52,6 +52,21 @@ func (s *SettingService) InitDefaults(ctx context.Context) error {
 	return nil
 }
 
+// ReconcileInfra re-applies infrastructure state on every startup.
+// This ensures panel ingress, HTTPS redirect middleware, and other K8s
+// resources survive restarts, accidental deletions, or cleanup operations.
+func (s *SettingService) ReconcileInfra(ctx context.Context) {
+	// Re-apply panel ingress if a domain is configured
+	if err := s.applyPanelDomain(ctx, s.getPanelDomain(ctx)); err != nil {
+		s.logger.Warn("reconcile: panel ingress not applied", slog.Any("error", err))
+	}
+}
+
+func (s *SettingService) getPanelDomain(ctx context.Context) string {
+	val, _ := s.store.Settings().Get(ctx, model.SettingPanelDomain)
+	return val
+}
+
 // detectK3sNodeIP gets the InternalIP of the first control-plane node.
 func (s *SettingService) detectK3sNodeIP(ctx context.Context) string {
 	nodes, err := s.orch.GetNodes(ctx)

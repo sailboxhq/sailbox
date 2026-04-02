@@ -127,7 +127,7 @@ func (s *NotificationService) NotifyAsync(orgID uuid.UUID, event model.NotifyEve
 		defer s.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		s.Notify(ctx, orgID, event, title, message)
+		_ = s.Notify(ctx, orgID, event, title, message)
 	}()
 }
 
@@ -271,7 +271,7 @@ func (s *NotificationService) sendEmail(ctx context.Context, ch *model.Notificat
 // dialAndSendSMTP connects to the SMTP server with timeout, supporting both
 // implicit TLS (port 465) and STARTTLS (port 587/25).
 func dialAndSendSMTP(cfg *SMTPConfig, from string, to []string, msg []byte) error {
-	addr := fmt.Sprintf("%s:%s", cfg.Host, cfg.Port)
+	addr := net.JoinHostPort(cfg.Host, cfg.Port)
 	timeout := 15 * time.Second
 
 	var conn net.Conn
@@ -291,10 +291,10 @@ func dialAndSendSMTP(cfg *SMTPConfig, from string, to []string, msg []byte) erro
 
 	client, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return fmt.Errorf("smtp client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// STARTTLS for non-465 ports
 	tlsUpgraded := cfg.Port == "465" // implicit TLS is already encrypted
@@ -374,8 +374,8 @@ func httpPostWithRetry(url, contentType string, body []byte) (*http.Response, er
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 		time.Sleep(2 * time.Second)
 		return notifHTTPClient.Post(url, contentType, bytes.NewReader(body))
 	}
@@ -410,8 +410,8 @@ func (s *NotificationService) sendTelegram(_ context.Context, ch *model.Notifica
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("telegram API returned status %d", resp.StatusCode)
@@ -441,8 +441,8 @@ func (s *NotificationService) sendDiscord(_ context.Context, ch *model.Notificat
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body) // drain for connection reuse
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body) // drain for connection reuse
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("discord webhook returned status %d", resp.StatusCode)
@@ -472,8 +472,8 @@ func (s *NotificationService) sendSlack(_ context.Context, ch *model.Notificatio
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("slack webhook returned status %d", resp.StatusCode)

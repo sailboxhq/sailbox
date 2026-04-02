@@ -105,7 +105,7 @@ func (s *ResourceService) GenerateSSHKey(ctx context.Context, orgID uuid.UUID, a
 	if name == "" {
 		// Generate a unique short ID from the public key fingerprint
 		shortID := make([]byte, 3)
-		rand.Read(shortID)
+		_, _ = rand.Read(shortID)
 		name = fmt.Sprintf("key-%s-%x", time.Now().Format("0102"), shortID)
 	}
 
@@ -135,7 +135,7 @@ func (s *ResourceService) GenerateSSHKey(ctx context.Context, orgID uuid.UUID, a
 // shortHex returns a random hex suffix for unique naming.
 func shortHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x", b)
 }
 
@@ -162,7 +162,7 @@ func (s *ResourceService) autoName(input CreateResourceInput) string {
 			Username string `json:"username"`
 		}
 		if input.Config != nil {
-			json.Unmarshal(input.Config, &cfg)
+			_ = json.Unmarshal(input.Config, &cfg)
 		}
 		if cfg.Username != "" {
 			return fmt.Sprintf("%s-%s-%s-%s", provider, cfg.Username, dateSuffix, hex)
@@ -174,7 +174,7 @@ func (s *ResourceService) autoName(input CreateResourceInput) string {
 			Username string `json:"username"`
 		}
 		if input.Config != nil {
-			json.Unmarshal(input.Config, &cfg)
+			_ = json.Unmarshal(input.Config, &cfg)
 		}
 		if cfg.Username != "" {
 			return fmt.Sprintf("%s-%s-%s-%s", provider, cfg.Username, dateSuffix, hex)
@@ -189,7 +189,7 @@ func (s *ResourceService) autoName(input CreateResourceInput) string {
 			Bucket string `json:"bucket"`
 		}
 		if input.Config != nil {
-			json.Unmarshal(input.Config, &cfg)
+			_ = json.Unmarshal(input.Config, &cfg)
 		}
 		if cfg.Bucket != "" {
 			return fmt.Sprintf("%s-%s-%s-%s", provider, cfg.Bucket, dateSuffix, hex)
@@ -354,7 +354,7 @@ func (s *ResourceService) testGitProvider(resource *model.SharedResource) (bool,
 	if err != nil {
 		return false, "connection failed: " + err.Error(), nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == 200 {
 		return true, "authenticated successfully", nil
@@ -387,7 +387,7 @@ func (s *ResourceService) testRegistry(resource *model.SharedResource) (bool, st
 	if err != nil {
 		return false, "connection failed: " + err.Error(), nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == 200 || resp.StatusCode == 401 {
 		// 401 is expected for Docker Hub without specific scope
@@ -504,7 +504,7 @@ func (s *ResourceService) ListRepos(ctx context.Context, orgID, resourceID uuid.
 		return s.listGitLabRepos(config.Token, apiURL)
 	case "gitea":
 		if config.APIURL == "" {
-			return nil, fmt.Errorf("Gitea API URL not configured")
+			return nil, fmt.Errorf("gitea API URL not configured")
 		}
 		return s.listGiteaRepos(config.Token, config.APIURL)
 	default:
@@ -536,7 +536,7 @@ func (s *ResourceService) refreshGitHubToken(ctx context.Context, resource *mode
 	if err != nil {
 		return "", fmt.Errorf("refresh request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var result struct {
@@ -598,7 +598,7 @@ func (s *ResourceService) listGitHubRepos(token string, org string) ([]GitRepo, 
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
 			return nil, fmt.Errorf("GitHub token expired or revoked (HTTP %d) — please reconnect in Resources", resp.StatusCode)
@@ -649,7 +649,7 @@ func (s *ResourceService) findGitHubInstallation(client *http.Client, token, org
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		Installations []struct {
@@ -695,7 +695,7 @@ func (s *ResourceService) listGitHubReposFallback(client *http.Client, token, or
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
 			return nil, fmt.Errorf("GitHub token expired or revoked (HTTP %d) — please reconnect in Resources", resp.StatusCode)
@@ -744,7 +744,7 @@ func (s *ResourceService) listGitLabRepos(token, apiURL string) ([]GitRepo, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var projects []struct {
 		Name              string `json:"name"`
@@ -753,7 +753,7 @@ func (s *ResourceService) listGitLabRepos(token, apiURL string) ([]GitRepo, erro
 		DefaultBranch     string `json:"default_branch"`
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
-	json.Unmarshal(body, &projects)
+	_ = json.Unmarshal(body, &projects)
 
 	var repos []GitRepo
 	for _, p := range projects {
@@ -776,7 +776,7 @@ func (s *ResourceService) listGiteaRepos(token, apiURL string) ([]GitRepo, error
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var giteaRepos []struct {
 		Name          string `json:"name"`
@@ -786,7 +786,7 @@ func (s *ResourceService) listGiteaRepos(token, apiURL string) ([]GitRepo, error
 		Private       bool   `json:"private"`
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
-	json.Unmarshal(body, &giteaRepos)
+	_ = json.Unmarshal(body, &giteaRepos)
 
 	var repos []GitRepo
 	for _, r := range giteaRepos {

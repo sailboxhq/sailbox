@@ -42,7 +42,7 @@ func (h *GitHubOAuthHandler) SetupManifest(c *gin.Context) {
 
 	// Store user ID in state for the callback
 	stateBytes := make([]byte, 16)
-	rand.Read(stateBytes)
+	_, _ = rand.Read(stateBytes)
 	state := hex.EncodeToString(stateBytes)
 	_ = h.store.Settings().Set(c.Request.Context(), "github_setup_state_"+state, middleware.GetUserID(c).String())
 
@@ -53,7 +53,7 @@ func (h *GitHubOAuthHandler) SetupManifest(c *gin.Context) {
 		hostPart = hostPart[:12]
 	}
 	randBytes := make([]byte, 2)
-	rand.Read(randBytes)
+	_, _ = rand.Read(randBytes)
 	appName := fmt.Sprintf("sailbox-%s-%x", hostPart, randBytes)
 
 	// Build manifest — hook_attributes.url is REQUIRED by GitHub
@@ -135,7 +135,7 @@ func (h *GitHubOAuthHandler) SetupCallback(c *gin.Context) {
 		h.redirectToFrontend(c, "/resources?error=exchange_failed")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
@@ -223,7 +223,7 @@ func (h *GitHubOAuthHandler) Connect(c *gin.Context) {
 	}
 
 	stateBytes := make([]byte, 16)
-	rand.Read(stateBytes)
+	_, _ = rand.Read(stateBytes)
 	state := hex.EncodeToString(stateBytes)
 	accountType := c.DefaultQuery("type", "personal")
 	org := c.Query("org")
@@ -364,7 +364,7 @@ func (h *GitHubOAuthHandler) exchangeCode(clientID, clientSecret, code string) (
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var result githubTokenResponse
@@ -387,13 +387,13 @@ func (h *GitHubOAuthHandler) getGitHubUser(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var user struct {
 		Login string `json:"login"`
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	json.Unmarshal(body, &user)
+	_ = json.Unmarshal(body, &user)
 	return user.Login, nil
 }
 

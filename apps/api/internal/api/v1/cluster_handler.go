@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
+	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/orchestrator"
 	"github.com/sailboxhq/sailbox/apps/api/internal/store"
 )
@@ -196,7 +197,8 @@ func (h *ClusterHandler) GetCleanupStats(c *gin.Context) {
 
 	// Enrich with orphan ingress detection (requires DB access)
 	validHosts := h.getValidDomainHosts(ctx)
-	orphans, orphanErr := h.orch.GetOrphanIngresses(ctx, validHosts)
+	systemIngresses := h.getSystemIngresses(ctx)
+	orphans, orphanErr := h.orch.GetOrphanIngresses(ctx, validHosts, systemIngresses)
 	if orphanErr == nil && orphans != nil {
 		stats.OrphanIngresses = len(orphans)
 		stats.OrphanIngressNames = orphans
@@ -208,10 +210,9 @@ func (h *ClusterHandler) GetCleanupStats(c *gin.Context) {
 	httputil.RespondOK(c, stats)
 }
 
-// getValidDomainHosts returns a set of all domain hosts in the database.
+// getValidDomainHosts returns the set of all app domain hosts in the database.
 func (h *ClusterHandler) getValidDomainHosts(ctx context.Context) map[string]bool {
 	hosts := make(map[string]bool)
-	// List all apps, get their domains
 	apps, _, _ := h.store.Applications().ListAll(ctx, store.ListParams{Page: 1, PerPage: 1000}, store.AppListFilter{})
 	for _, app := range apps {
 		domains, _ := h.store.Domains().ListByApp(ctx, app.ID)
@@ -220,6 +221,19 @@ func (h *ClusterHandler) getValidDomainHosts(ctx context.Context) map[string]boo
 		}
 	}
 	return hosts
+}
+
+// getSystemIngresses returns system-managed ingresses keyed by "namespace/name"
+// with their currently expected host. These are validated by resource identity
+// (not the global host list) so that an app ingress sharing the same host is
+// not accidentally exempt from orphan cleanup.
+func (h *ClusterHandler) getSystemIngresses(ctx context.Context) map[string]string {
+	si := make(map[string]string)
+	if panelDomain, _ := h.store.Settings().Get(ctx, model.SettingPanelDomain); panelDomain != "" {
+		si["sailbox/sailbox-panel"] = panelDomain
+		si["sailbox/sailbox-panel-http"] = panelDomain
+	}
+	return si
 }
 
 func (h *ClusterHandler) CleanupEvictedPods(c *gin.Context) {
@@ -270,7 +284,8 @@ func (h *ClusterHandler) CleanupCompletedJobs(c *gin.Context) {
 func (h *ClusterHandler) CleanupOrphanIngresses(c *gin.Context) {
 	ctx := c.Request.Context()
 	validHosts := h.getValidDomainHosts(ctx)
-	result, err := h.orch.CleanupOrphanIngresses(ctx, validHosts)
+	systemIngresses := h.getSystemIngresses(ctx)
+	result, err := h.orch.CleanupOrphanIngresses(ctx, validHosts, systemIngresses)
 	if err != nil {
 		httputil.RespondError(c, err)
 		return

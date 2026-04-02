@@ -146,14 +146,6 @@ func (s *AppService) Create(ctx context.Context, input CreateAppInput) (*model.A
 	return app, nil
 }
 
-// sanitizeName converts a name to a valid DNS subdomain label.
-func sanitizeName(name string) string {
-	name = strings.ToLower(name)
-	name = strings.ReplaceAll(name, "_", "-")
-	name = strings.ReplaceAll(name, " ", "-")
-	return name
-}
-
 // guessContainerPort returns a default port for common Docker images.
 func guessContainerPort(image string) int {
 	img := strings.ToLower(image)
@@ -877,6 +869,6 @@ func sanitizeK8sName(name string) string {
 
 func randomHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }

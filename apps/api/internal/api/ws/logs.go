@@ -56,7 +56,7 @@ func (h *LogsHandler) Handle(c *gin.Context) {
 		h.logger.Error("websocket upgrade failed", slog.Any("error", err))
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	podName := c.Query("pod")
 	timestamps := c.Query("timestamps") == "true"
@@ -99,7 +99,7 @@ func (h *LogsHandler) streamLogs(conn *websocket.Conn, app *model.Application, p
 		_ = conn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	h.logger.Info("log stream started", slog.String("app", app.Name))
 

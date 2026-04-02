@@ -370,7 +370,7 @@ func (o *Orchestrator) streamBuildLogs(ctx context.Context, namespace, jobName s
 			break
 		}
 
-		buf.WriteString(fmt.Sprintf("=== %s ===\n", c.Name))
+		fmt.Fprintf(&buf, "=== %s ===\n", c.Name)
 		flush()
 
 		// Wait for this container to start (init containers run sequentially)
@@ -383,7 +383,7 @@ func (o *Orchestrator) streamBuildLogs(ctx context.Context, namespace, jobName s
 			Follow:    true,
 		}).Stream(ctx)
 		if err != nil {
-			buf.WriteString(fmt.Sprintf("[failed to stream: %s]\n", err))
+			fmt.Fprintf(&buf, "[failed to stream: %s]\n", err)
 			flush()
 			continue
 		}
@@ -396,7 +396,7 @@ func (o *Orchestrator) streamBuildLogs(ctx context.Context, namespace, jobName s
 				flush()
 			}
 		}
-		logStream.Close()
+		_ = logStream.Close()
 		flush()
 	}
 }
@@ -453,12 +453,12 @@ func (o *Orchestrator) collectBuildLogs(ctx context.Context, namespace, jobName 
 		if err != nil {
 			continue
 		}
-		allLogs.WriteString(fmt.Sprintf("=== %s ===\n", c.Name))
+		fmt.Fprintf(&allLogs, "=== %s ===\n", c.Name)
 		scanner := bufio.NewScanner(logStream)
 		for scanner.Scan() {
 			allLogs.WriteString(scanner.Text() + "\n")
 		}
-		logStream.Close()
+		_ = logStream.Close()
 	}
 
 	return allLogs.String()

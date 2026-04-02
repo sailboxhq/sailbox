@@ -100,10 +100,12 @@ func (o *Orchestrator) buildCronJobSpec(cj *model.CronJob) *batchv1.CronJob {
 			Labels:    labels,
 		},
 		Spec: batchv1.CronJobSpec{
-			Schedule:          cj.CronExpression,
-			TimeZone:          &cj.Timezone,
-			Suspend:           &suspend,
-			ConcurrencyPolicy: concurrencyPolicy,
+			Schedule:                   cj.CronExpression,
+			TimeZone:                   &cj.Timezone,
+			Suspend:                    &suspend,
+			ConcurrencyPolicy:          concurrencyPolicy,
+			SuccessfulJobsHistoryLimit: int32Ptr(1),
+			FailedJobsHistoryLimit:     int32Ptr(1),
 			JobTemplate: batchv1.JobTemplateSpec{
 				Spec: batchv1.JobSpec{
 					BackoffLimit:          &backoffLimit,

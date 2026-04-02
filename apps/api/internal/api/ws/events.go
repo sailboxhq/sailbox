@@ -79,10 +79,10 @@ func (b *SSEBroker) ServeHTTP(c *gin.Context) {
 			return
 		case change := <-ch:
 			data, _ := json.Marshal(change)
-			fmt.Fprintf(c.Writer, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 			c.Writer.Flush()
 		case <-heartbeat.C:
-			fmt.Fprintf(c.Writer, ": heartbeat\n\n")
+			_, _ = fmt.Fprintf(c.Writer, ": heartbeat\n\n")
 			c.Writer.Flush()
 		}
 	}

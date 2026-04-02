@@ -64,7 +64,7 @@ func main() {
 		logger.Error("failed to connect to database", slog.Any("error", err))
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	logger.Info("connected to database")
 
 	// Auto-migrate database
@@ -122,7 +122,7 @@ func main() {
 	sseBroker := ws.NewSSEBroker(logger)
 	if subscriber != nil {
 		go sseBroker.Run(subscriber)
-		defer subscriber.Close()
+		defer func() { _ = subscriber.Close() }()
 		logger.Info("real-time events enabled (PG LISTEN/NOTIFY → SSE)")
 	}
 
@@ -140,6 +140,9 @@ func main() {
 	if err := services.Setting.InitDefaults(context.Background()); err != nil {
 		logger.Error("failed to init settings", slog.Any("error", err))
 	}
+
+	// Reconcile infrastructure (re-apply panel ingress, etc.)
+	services.Setting.ReconcileInfra(context.Background())
 
 	// Router
 	router := server.NewRouter(&server.RouterDeps{

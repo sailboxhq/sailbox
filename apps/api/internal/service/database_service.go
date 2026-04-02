@@ -484,10 +484,11 @@ func (s *DatabaseService) ListBackups(ctx context.Context, databaseID uuid.UUID,
 			continue
 		}
 		now := time.Now()
-		if jobStatus == "completed" {
+		switch jobStatus {
+		case "completed":
 			backups[i].Status = "completed"
 			backups[i].FinishedAt = &now
-		} else if jobStatus == "failed" {
+		case "failed":
 			backups[i].Status = "failed"
 			backups[i].FinishedAt = &now
 		}
@@ -503,9 +504,10 @@ func (s *DatabaseService) ListBackups(ctx context.Context, databaseID uuid.UUID,
 		if jobStatus == "" {
 			continue
 		}
-		if jobStatus == "completed" {
+		switch jobStatus {
+		case "completed":
 			backups[i].RestoreStatus = "completed"
-		} else if jobStatus == "failed" {
+		case "failed":
 			backups[i].RestoreStatus = "failed"
 		}
 		_ = s.store.DatabaseBackups().Update(ctx, &backups[i])
