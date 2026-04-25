@@ -13,7 +13,7 @@ services:
       POSTGRES_USER: sailbox
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sailbox"]
       interval: 5s
