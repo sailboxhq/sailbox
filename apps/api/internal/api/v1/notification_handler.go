@@ -7,6 +7,7 @@ import (
 	"github.com/sailboxhq/sailbox/apps/api/internal/api/middleware"
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
+	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/service"
 )
 
@@ -24,6 +25,11 @@ func (h *NotificationHandler) ListChannels(c *gin.Context) {
 	if err != nil {
 		httputil.RespondError(c, err)
 		return
+	}
+	// Channel configs hold bot tokens and webhook URLs — redact before sending.
+	// Saving a config back with the placeholder keeps the stored value.
+	for i := range channels {
+		channels[i].Config = model.RedactConfig(channels[i].Config)
 	}
 	httputil.RespondOK(c, channels)
 }

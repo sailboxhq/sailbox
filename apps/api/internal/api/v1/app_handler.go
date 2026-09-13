@@ -89,9 +89,17 @@ func (h *AppHandler) AppOrgGuard() gin.HandlerFunc {
 
 func (h *AppHandler) ListAll(c *gin.Context) {
 	params := bindListParams(c)
+	granted, err := grantedProjectIDs(c, h.store)
+	if err != nil {
+		httputil.RespondError(c, err)
+		return
+	}
+
 	filter := store.AppListFilter{
-		Search: c.Query("search"),
-		Status: c.Query("status"),
+		Search:     c.Query("search"),
+		Status:     c.Query("status"),
+		OrgID:      middleware.GetOrgID(c),
+		ProjectIDs: granted,
 	}
 	apps, total, err := h.svc.ListAll(c.Request.Context(), params, filter)
 	if err != nil {
@@ -125,14 +133,9 @@ func (h *AppHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Verify project belongs to caller's org
-	project, pErr := h.store.Projects().GetByID(c.Request.Context(), input.ProjectID)
-	if pErr != nil {
-		httputil.RespondError(c, apierr.ErrNotFound.WithDetail("project not found"))
-		return
-	}
-	if project.OrgID != middleware.GetOrgID(c) {
-		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
+	// The project comes from the request body, so it gets the same ownership and
+	// project-grant check the :id routes get from Guard.
+	if !RequireProjectWrite(c, h.store, input.ProjectID) {
 		return
 	}
 

@@ -11,7 +11,7 @@ import (
 )
 
 type userStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *userStore) GetByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
@@ -57,10 +57,19 @@ func (s *userStore) UpdateRole(ctx context.Context, userID uuid.UUID, role strin
 	return err
 }
 
-func (s *userStore) RemoveFromOrg(ctx context.Context, userID uuid.UUID) error {
+func (s *userStore) Delete(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.NewDelete().
+		Model((*model.User)(nil)).
+		Where("id = ?", userID).
+		Exec(ctx)
+	return err
+}
+
+// IncrementTokenVersion invalidates the user's issued refresh tokens.
+func (s *userStore) IncrementTokenVersion(ctx context.Context, userID uuid.UUID) error {
 	_, err := s.db.NewUpdate().
 		Model((*model.User)(nil)).
-		Set("org_id = NULL").
+		Set("token_version = token_version + 1").
 		Where("id = ?", userID).
 		Exec(ctx)
 	return err

@@ -15,11 +15,16 @@ let verified: Promise<void> | null = null;
 
 function verifyToken(): Promise<void> {
   if (!verified) {
-    verified = api.get("/api/v1/auth/me").catch(() => {
-      verified = null;
-      clearTokens();
-      throw redirect({ to: "/auth/login" });
-    });
+    // api.get resolves with the /auth/me payload, which this guard ignores —
+    // map it to void so the cached promise matches the declared return type.
+    verified = api
+      .get("/api/v1/auth/me")
+      .then(() => undefined)
+      .catch(() => {
+        verified = null;
+        clearTokens();
+        throw redirect({ to: "/auth/login" });
+      });
   }
   return verified;
 }

@@ -269,7 +269,7 @@ export function VolumesTab({ app, appId }: { app: App; appId: string }) {
         description="Volume changes are saved. Redeploy now to apply them to the running application?"
         confirmLabel="Redeploy"
         onConfirm={() => {
-          deploy.mutate();
+          deploy.mutate(undefined);
           setShowRedeploy(false);
         }}
       />

@@ -11,7 +11,7 @@ import (
 )
 
 type managedDatabaseStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *managedDatabaseStore) GetByID(ctx context.Context, id uuid.UUID) (*model.ManagedDatabase, error) {
@@ -73,4 +73,9 @@ func (s *managedDatabaseStore) ListExternalPorts(ctx context.Context) ([]model.E
 		OrderExpr("external_port ASC").
 		Scan(ctx, &result)
 	return result, err
+}
+
+func (s *managedDatabaseStore) DeleteByProject(ctx context.Context, projectID uuid.UUID) error {
+	_, err := s.db.NewDelete().Model((*model.ManagedDatabase)(nil)).Where("project_id = ?", projectID).Exec(ctx)
+	return err
 }

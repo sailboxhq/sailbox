@@ -10,7 +10,7 @@ import (
 )
 
 type invitationStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *invitationStore) Create(ctx context.Context, inv *model.Invitation) error {
@@ -45,4 +45,10 @@ func (s *invitationStore) Delete(ctx context.Context, id uuid.UUID) error {
 func (s *invitationStore) Update(ctx context.Context, inv *model.Invitation) error {
 	_, err := s.db.NewUpdate().Model(inv).WherePK().Returning("*").Exec(ctx)
 	return err
+}
+
+func (s *invitationStore) GetByID(ctx context.Context, id uuid.UUID) (*model.Invitation, error) {
+	inv := new(model.Invitation)
+	err := s.db.NewSelect().Model(inv).Where("id = ?", id).Scan(ctx)
+	return inv, err
 }

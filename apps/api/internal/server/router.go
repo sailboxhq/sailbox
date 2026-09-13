@@ -18,6 +18,7 @@ import (
 type RouterDeps struct {
 	Services    *service.Container
 	JWTManager  *auth.JWTManager
+	Sessions    auth.SessionValidator // rejects tokens whose account was removed or revoked
 	Orch        orchestrator.Orchestrator
 	Store       store.Store
 	SSEBroker   *ws.SSEBroker
@@ -46,20 +47,28 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	// Ownership + project-access guard, shared by the WebSocket routes and every
+	// by-ID API route below.
+	guard := v1.NewGuard(deps.Store)
+
 	// WebSocket / SSE routes (auth via query param token)
 	wsGroup := r.Group("/ws")
-	wsGroup.Use(middleware.WSAuth(deps.JWTManager))
+	wsGroup.Use(middleware.WSAuth(deps.JWTManager, deps.Sessions))
 	{
+		// A session alone is not enough here: these reach into one app, so they
+		// take the same project checks as the REST routes. Streaming logs is a
+		// read; a terminal is command execution, so it needs write access.
 		logsHandler := ws.NewLogsHandler(deps.Store, deps.Orch, deps.Logger)
-		wsGroup.GET("/logs/:appId", logsHandler.Handle)
+		wsGroup.GET("/logs/:appId", guard.AppParam("appId"), logsHandler.Handle)
 
 		wsGroup.GET("/events", deps.SSEBroker.ServeHTTP)
 
+		// Node logs are cluster-level, like the /nodes REST routes.
 		nodeLogsHandler := ws.NewNodeLogsHandler(deps.Services.Node, deps.Logger)
-		wsGroup.GET("/nodes/:id/logs", nodeLogsHandler.Handle)
+		wsGroup.GET("/nodes/:id/logs", middleware.RequireRole("owner", "admin"), nodeLogsHandler.Handle)
 
 		terminalHandler := ws.NewTerminalHandler(deps.Store, deps.Orch, deps.Logger)
-		wsGroup.GET("/terminal/:appId", terminalHandler.Handle)
+		wsGroup.GET("/terminal/:appId", guard.AppParam("appId"), guard.RequireWrite(), terminalHandler.Handle)
 	}
 
 	// API v1
@@ -97,7 +106,7 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 
 		// Protected routes
 		protected := apiV1.Group("")
-		protected.Use(middleware.Auth(deps.JWTManager))
+		protected.Use(middleware.Auth(deps.JWTManager, deps.Sessions))
 		{
 			// Auth
 			protected.GET("/auth/me", authHandler.Me)
@@ -113,12 +122,18 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 			protected.GET("/auth/github/setup", githubOAuth.SetupManifest)
 			protected.GET("/auth/github/status", githubOAuth.GitHubStatus)
 
+			// Infrastructure- and credential-level operations are administrative:
+			// cluster surgery, node lifecycle, SMTP/notification credentials and
+			// global settings are not things an ordinary member may change.
+			admin := middleware.RequireRole("owner", "admin")
+
 			// Projects
-			projects := v1.NewProjectHandler(deps.Services.Project)
+			projects := v1.NewProjectHandler(deps.Services.Project, deps.Store)
 			protected.GET("/projects", projects.List)
 			protected.POST("/projects", projects.Create)
 
 			projectGroup := protected.Group("/projects/:id")
+			projectGroup.Use(guard.Project())
 			{
 				projectGroup.GET("", projects.Get)
 				projectGroup.PATCH("", projects.Update)
@@ -131,7 +146,7 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 				dbHandler := v1.NewDatabaseHandler(deps.Services.Database, deps.Store)
 				projectGroup.GET("/databases", dbHandler.ListByProject)
 
-				cronJobHandler := v1.NewCronJobHandler(deps.Services.CronJob)
+				cronJobHandler := v1.NewCronJobHandler(deps.Services.CronJob, deps.Store)
 				projectGroup.GET("/cronjobs", cronJobHandler.ListByProject)
 			}
 
@@ -142,7 +157,7 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 
 			// All /apps/:id routes require org ownership verification
 			appByID := protected.Group("/apps/:id")
-			appByID.Use(appHandler.AppOrgGuard())
+			appByID.Use(guard.App())
 			{
 				appByID.GET("", appHandler.Get)
 				appByID.DELETE("", appHandler.Delete)
@@ -156,59 +171,79 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 				appByID.POST("/clear-cache", appHandler.ClearBuildCache)
 				appByID.PATCH("", appHandler.Update)
 				appByID.GET("/pods/:podName/events", appHandler.GetPodEvents)
-				appByID.GET("/webhook", appHandler.GetWebhookConfig)
+				appByID.GET("/webhook", guard.RequireWrite(), appHandler.GetWebhookConfig)
 				appByID.POST("/webhook/enable", appHandler.EnableWebhook)
 				appByID.POST("/webhook/disable", appHandler.DisableWebhook)
 				appByID.POST("/webhook/regenerate", appHandler.RegenerateWebhook)
 				appByID.GET("/secrets", appHandler.GetSecrets)
 				appByID.PUT("/secrets", appHandler.UpdateSecrets)
 			}
-			// Deployments under apps
+			// Deployments and domains under apps — same guard as the rest of /apps/:id
 			deploys := v1.NewDeployHandler(deps.Services.Deploy, deps.Store)
-			protected.POST("/apps/:id/deploy", deploys.Trigger)
-			protected.GET("/apps/:id/deployments", deploys.List)
-
-			// Domains under apps
 			domains := v1.NewDomainHandler(deps.Services.Domain, deps.Store)
-			protected.GET("/apps/:id/domains", domains.ListByApp)
-			protected.POST("/apps/:id/domains", domains.Create)
-			protected.POST("/apps/:id/domains/generate", domains.Generate)
+			{
+				appByID.POST("/deploy", deploys.Trigger)
+				appByID.GET("/deployments", deploys.List)
+				appByID.GET("/domains", domains.ListByApp)
+				appByID.POST("/domains", domains.Create)
+				appByID.POST("/domains/generate", domains.Generate)
+			}
 
 			// Deployments (flat)
 			protected.GET("/deployments", deploys.ListAll)
 			protected.GET("/deployments/queue", deploys.ListQueue)
-			protected.GET("/deployments/:id", deploys.Get)
-			protected.POST("/deployments/:id/cancel", deploys.Cancel)
-			protected.POST("/deployments/:id/rollback", deploys.Rollback)
+
+			deployByID := protected.Group("/deployments/:id")
+			deployByID.Use(guard.Deployment())
+			{
+				deployByID.GET("", deploys.Get)
+				deployByID.POST("/cancel", deploys.Cancel)
+				deployByID.POST("/rollback", deploys.Rollback)
+			}
 
 			// CronJobs (flat)
-			cronJobs := v1.NewCronJobHandler(deps.Services.CronJob)
+			cronJobs := v1.NewCronJobHandler(deps.Services.CronJob, deps.Store)
 			protected.POST("/cronjobs", cronJobs.Create)
-			protected.GET("/cronjobs/:id", cronJobs.Get)
-			protected.PATCH("/cronjobs/:id", cronJobs.Update)
-			protected.DELETE("/cronjobs/:id", cronJobs.Delete)
-			protected.POST("/cronjobs/:id/trigger", cronJobs.Trigger)
-			protected.GET("/cronjobs/:id/runs", cronJobs.ListRuns)
+			cronByID := protected.Group("/cronjobs/:id")
+			cronByID.Use(guard.CronJob())
+			{
+				cronByID.GET("", cronJobs.Get)
+				cronByID.PATCH("", cronJobs.Update)
+				cronByID.DELETE("", cronJobs.Delete)
+				cronByID.POST("/trigger", cronJobs.Trigger)
+				cronByID.GET("/runs", cronJobs.ListRuns)
+			}
 
 			// Domains (flat - for delete and update)
-			protected.DELETE("/domains/:id", domains.Delete)
-			protected.PATCH("/domains/:id", domains.Update)
+			domainByID := protected.Group("/domains/:id")
+			domainByID.Use(guard.Domain())
+			{
+				domainByID.DELETE("", domains.Delete)
+				domainByID.PATCH("", domains.Update)
+			}
 
 			// Databases (flat)
 			dbHandler := v1.NewDatabaseHandler(deps.Services.Database, deps.Store)
 			protected.GET("/databases/versions", dbHandler.ListVersions)
 			protected.GET("/databases/used-ports", dbHandler.UsedPorts)
 			protected.POST("/databases", dbHandler.Create)
-			protected.GET("/databases/:id", dbHandler.Get)
-			protected.DELETE("/databases/:id", dbHandler.Delete)
-			protected.GET("/databases/:id/credentials", dbHandler.GetCredentials)
-			protected.GET("/databases/:id/status", dbHandler.GetStatus)
-			protected.GET("/databases/:id/pods", dbHandler.GetPods)
-			protected.POST("/databases/:id/backups", dbHandler.TriggerBackup)
-			protected.GET("/databases/:id/backups", dbHandler.ListBackups)
-			protected.POST("/databases/:id/backups/:backupId/restore", dbHandler.RestoreBackup)
-			protected.POST("/databases/:id/external-access", dbHandler.UpdateExternalAccess)
-			protected.PUT("/databases/:id/backup-config", dbHandler.UpdateBackupConfig)
+			dbByID := protected.Group("/databases/:id")
+			dbByID.Use(guard.Database())
+			{
+				dbByID.GET("", dbHandler.Get)
+				dbByID.PATCH("", dbHandler.Update)
+				dbByID.DELETE("", dbHandler.Delete)
+				// Hands back the database password and connection string, which
+				// are write access to the data by any other name.
+				dbByID.GET("/credentials", guard.RequireWrite(), dbHandler.GetCredentials)
+				dbByID.GET("/status", dbHandler.GetStatus)
+				dbByID.GET("/pods", dbHandler.GetPods)
+				dbByID.POST("/backups", dbHandler.TriggerBackup)
+				dbByID.GET("/backups", dbHandler.ListBackups)
+				dbByID.POST("/backups/:backupId/restore", dbHandler.RestoreBackup)
+				dbByID.POST("/external-access", dbHandler.UpdateExternalAccess)
+				dbByID.PUT("/backup-config", dbHandler.UpdateBackupConfig)
+			}
 
 			// Templates
 			templates := v1.NewTemplateHandler(deps.Services.Template)
@@ -226,22 +261,22 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 			protected.GET("/cluster/node-metrics", cluster.GetNodeMetrics)
 			protected.GET("/cluster/topology", cluster.GetTopology)
 			protected.GET("/cluster/node-pools", cluster.GetNodePools)
-			protected.PUT("/cluster/nodes/:name/pool", cluster.SetNodePool)
+			protected.PUT("/cluster/nodes/:name/pool", admin, cluster.SetNodePool)
 			protected.GET("/cluster/traefik-config", cluster.GetTraefikConfig)
-			protected.PUT("/cluster/traefik-config", cluster.UpdateTraefikConfig)
-			protected.POST("/cluster/traefik-restart", cluster.RestartTraefik)
+			protected.PUT("/cluster/traefik-config", admin, cluster.UpdateTraefikConfig)
+			protected.POST("/cluster/traefik-restart", admin, cluster.RestartTraefik)
 			protected.GET("/cluster/traefik-status", cluster.GetTraefikStatus)
 			protected.GET("/cluster/helm-releases", cluster.GetHelmReleases)
 			protected.GET("/cluster/daemonsets", cluster.GetDaemonSets)
-			protected.DELETE("/cluster/pvcs/:namespace/:name", cluster.DeletePVC)
-			protected.PUT("/cluster/pvcs/:namespace/:name/expand", cluster.ExpandPVC)
+			protected.DELETE("/cluster/pvcs/:namespace/:name", admin, cluster.DeletePVC)
+			protected.PUT("/cluster/pvcs/:namespace/:name/expand", admin, cluster.ExpandPVC)
 			protected.GET("/cluster/cleanup/stats", cluster.GetCleanupStats)
-			protected.POST("/cluster/cleanup/evicted-pods", cluster.CleanupEvictedPods)
-			protected.POST("/cluster/cleanup/failed-pods", cluster.CleanupFailedPods)
-			protected.POST("/cluster/cleanup/completed-pods", cluster.CleanupCompletedPods)
-			protected.POST("/cluster/cleanup/stale-replicasets", cluster.CleanupStaleReplicaSets)
-			protected.POST("/cluster/cleanup/completed-jobs", cluster.CleanupCompletedJobs)
-			protected.POST("/cluster/cleanup/orphan-ingresses", cluster.CleanupOrphanIngresses)
+			protected.POST("/cluster/cleanup/evicted-pods", admin, cluster.CleanupEvictedPods)
+			protected.POST("/cluster/cleanup/failed-pods", admin, cluster.CleanupFailedPods)
+			protected.POST("/cluster/cleanup/completed-pods", admin, cluster.CleanupCompletedPods)
+			protected.POST("/cluster/cleanup/stale-replicasets", admin, cluster.CleanupStaleReplicaSets)
+			protected.POST("/cluster/cleanup/completed-jobs", admin, cluster.CleanupCompletedJobs)
+			protected.POST("/cluster/cleanup/orphan-ingresses", admin, cluster.CleanupOrphanIngresses)
 
 			// Monitoring
 			monitoring := v1.NewMonitoringHandler(deps.Services.Metrics)
@@ -254,24 +289,24 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 			// Settings
 			settings := v1.NewSettingHandler(deps.Services.Setting)
 			protected.GET("/settings", settings.GetAll)
-			protected.PUT("/settings", settings.Update)
+			protected.PUT("/settings", admin, settings.Update)
 			protected.GET("/settings/verify-domain", settings.VerifyDomain)
 
 			// Notifications
 			notif := v1.NewNotificationHandler(deps.Services.Notification)
 			protected.GET("/notifications/channels", notif.ListChannels)
-			protected.PUT("/notifications/channels", notif.SaveChannel)
-			protected.POST("/notifications/test", notif.TestChannel)
-			protected.GET("/settings/smtp", notif.GetSMTPConfig)
-			protected.PUT("/settings/smtp", notif.SaveSMTPConfig)
-			protected.POST("/settings/smtp/test", notif.TestSMTP)
+			protected.PUT("/notifications/channels", admin, notif.SaveChannel)
+			protected.POST("/notifications/test", admin, notif.TestChannel)
+			protected.GET("/settings/smtp", admin, notif.GetSMTPConfig)
+			protected.PUT("/settings/smtp", admin, notif.SaveSMTPConfig)
+			protected.POST("/settings/smtp/test", admin, notif.TestSMTP)
 
 			// Nodes
 			nodeHandler := v1.NewNodeHandler(deps.Services.Node)
 			protected.GET("/nodes", nodeHandler.List)
-			protected.POST("/nodes", nodeHandler.Create)
-			protected.POST("/nodes/:id/initialize", nodeHandler.Initialize)
-			protected.DELETE("/nodes/:id", nodeHandler.Delete)
+			protected.POST("/nodes", admin, nodeHandler.Create)
+			protected.POST("/nodes/:id/initialize", admin, nodeHandler.Initialize)
+			protected.DELETE("/nodes/:id", admin, nodeHandler.Delete)
 
 			// Team management
 			team := v1.NewTeamHandler(deps.Services.Team, deps.Services.Notification, deps.AppURL)
@@ -306,19 +341,19 @@ func NewRouter(deps *RouterDeps) *gin.Engine {
 
 			// System Backups
 			sysBackup := v1.NewSystemBackupHandler(deps.Services.SystemBackup)
-			protected.GET("/system/backup/config", sysBackup.GetConfig)
-			protected.PUT("/system/backup/config", sysBackup.SaveConfig)
-			protected.POST("/system/backup/trigger", sysBackup.TriggerBackup)
+			protected.GET("/system/backup/config", admin, sysBackup.GetConfig)
+			protected.PUT("/system/backup/config", admin, sysBackup.SaveConfig)
+			protected.POST("/system/backup/trigger", admin, sysBackup.TriggerBackup)
 			protected.GET("/system/backup/list", sysBackup.ListBackups)
 
 			// Shared Resources
 			resourceHandler := v1.NewResourceHandler(deps.Services.Resource)
 			protected.GET("/resources", resourceHandler.List)
-			protected.POST("/resources", resourceHandler.Create)
-			protected.POST("/resources/generate-ssh-key", resourceHandler.GenerateSSHKey)
+			protected.POST("/resources", admin, resourceHandler.Create)
+			protected.POST("/resources/generate-ssh-key", admin, resourceHandler.GenerateSSHKey)
 			protected.GET("/resources/:id/repos", resourceHandler.ListRepos)
-			protected.PATCH("/resources/:id", resourceHandler.Update)
-			protected.DELETE("/resources/:id", resourceHandler.Delete)
+			protected.PATCH("/resources/:id", admin, resourceHandler.Update)
+			protected.DELETE("/resources/:id", admin, resourceHandler.Delete)
 			protected.POST("/resources/:id/test", resourceHandler.TestConnection)
 		}
 	}

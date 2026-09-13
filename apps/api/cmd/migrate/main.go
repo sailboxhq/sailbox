@@ -35,7 +35,11 @@ func main() {
 	}
 	defer func() { _ = store.Close() }()
 
-	migrator := migrate.NewMigrator(store.DB(), migrations.Migrations)
+	// WithMarkAppliedOnSuccess: by default Bun records a migration as applied
+	// *before* running it, so a migration that fails part-way is never retried —
+	// the next start skips it and the schema stays half-migrated. Recording only
+	// on success makes a failed migration re-run instead.
+	migrator := migrate.NewMigrator(store.DB(), migrations.Migrations, migrate.WithMarkAppliedOnSuccess(true))
 	ctx := context.Background()
 
 	command := os.Args[1]

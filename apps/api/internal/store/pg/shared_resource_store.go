@@ -10,7 +10,7 @@ import (
 )
 
 type sharedResourceStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *sharedResourceStore) GetByID(ctx context.Context, id uuid.UUID) (*model.SharedResource, error) {

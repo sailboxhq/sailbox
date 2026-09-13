@@ -38,6 +38,7 @@ func NewContainer(
 	logger *slog.Logger,
 	dbURL string,
 	setupSecret string,
+	sessions auth.SessionInvalidator,
 ) *Container {
 	settingSvc := NewSettingService(s, orch, logger)
 	notifSvc := NewNotificationService(s, settingSvc, logger)
@@ -45,7 +46,7 @@ func NewContainer(
 	buildSvc := NewBuildService(s, orch, logger)
 
 	return &Container{
-		Auth:         NewAuthService(s, jwtManager, logger),
+		Auth:         NewAuthService(s, jwtManager, logger, sessions),
 		Project:      NewProjectService(s, orch, logger),
 		App:          NewAppService(s, orch, logger, domainSvc),
 		Deploy:       NewDeployService(s, orch, logger, buildSvc, notifSvc),
@@ -58,7 +59,7 @@ func NewContainer(
 		Resource:     NewResourceService(s, logger),
 		Metrics:      NewMetricsCollector(metricsStore, s, orch, logger, notifSvc),
 		CronJob:      NewCronJobService(s, orch, logger),
-		Team:         NewTeamService(s, jwtManager, logger),
+		Team:         NewTeamService(s, jwtManager, logger, sessions),
 		Notification: notifSvc,
 		Version:      NewVersionService(logger),
 		SystemBackup: NewSystemBackupService(s, settingSvc, dbURL, logger),

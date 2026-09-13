@@ -84,6 +84,11 @@ type AppManager interface {
 // DatabaseManager handles managed database lifecycle.
 type DatabaseManager interface {
 	DeployDatabase(ctx context.Context, db *model.ManagedDatabase) error
+	// UpdateDatabaseResources applies changed CPU/memory limits to a database
+	// that is already running. Only the limits are reconciled: the image and the
+	// data path are fixed at creation, since changing either in place would move
+	// PGDATA out from under an initialised cluster.
+	UpdateDatabaseResources(ctx context.Context, db *model.ManagedDatabase) error
 	DeleteDatabase(ctx context.Context, db *model.ManagedDatabase) error
 	GetDatabaseStatus(ctx context.Context, db *model.ManagedDatabase) (*AppStatus, error)
 	GetDatabaseCredentials(ctx context.Context, db *model.ManagedDatabase) (*DatabaseCredentials, error)

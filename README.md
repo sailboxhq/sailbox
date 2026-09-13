@@ -75,7 +75,7 @@ curl -sSL https://get.sailbox.dev/upgrade | sudo sh
 - PostgreSQL · MySQL · MariaDB · Redis · MongoDB
 - Connection strings, external access via NodePort
 - Automated S3 backups with schedule and retention
-- Version management and health probes
+- Version selection, editable CPU/memory limits, health probes
 
 #### Cron Jobs
 - Native Kubernetes CronJobs

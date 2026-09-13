@@ -98,6 +98,30 @@ patch_env() {
     fi
 }
 
+# Ensure the postgres volume uses the PG18+ layout (a single mount at
+# /var/lib/postgresql). The 18+ image refuses to start when
+# /var/lib/postgresql/data is a mount point of its own, so an install still on
+# the old path has never had a working database — nothing to preserve.
+migrate_pgdata_mount() {
+    grep -q 'pgdata:/var/lib/postgresql/data' "$COMPOSE_FILE" || return 0
+
+    # A custom PGDATA means the operator already worked around this by hand and
+    # may have real data under the old mount — don't touch it.
+    if grep -q 'PGDATA' "$COMPOSE_FILE"; then
+        _log "[warn] Old pgdata mount kept: compose sets a custom PGDATA"
+        return 0
+    fi
+
+    _log "[info] Migrating postgres volume to the PG18+ mount layout"
+    sed -i 's|pgdata:/var/lib/postgresql/data|pgdata:/var/lib/postgresql|' "$COMPOSE_FILE"
+
+    if docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --force-recreate --no-deps postgres >> "$LOG_FILE" 2>&1; then
+        _log "[ok] Postgres recreated with the new mount"
+    else
+        _log "[warn] Could not recreate postgres — run: docker compose -f $COMPOSE_FILE up -d postgres"
+    fi
+}
+
 pull_image() {
     _log "[info] Pulling latest image..."
     write_status "upgrading" "Pulling latest image..."
@@ -260,6 +284,7 @@ run_upgrade() {
     trap 'release_lock; rm -f "$ROLLBACK_IMAGE_FILE"' EXIT
 
     patch_env || { release_lock; exit 1; }
+    migrate_pgdata_mount
     pull_image || { release_lock; exit 1; }
     backup_database || { release_lock; exit 1; }
     restart_sailbox || { rollback; release_lock; exit 1; }

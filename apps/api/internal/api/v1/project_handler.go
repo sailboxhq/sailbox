@@ -13,18 +13,27 @@ import (
 )
 
 type ProjectHandler struct {
-	svc *service.ProjectService
+	svc   *service.ProjectService
+	store store.Store
 }
 
-func NewProjectHandler(svc *service.ProjectService) *ProjectHandler {
-	return &ProjectHandler{svc: svc}
+func NewProjectHandler(svc *service.ProjectService, s store.Store) *ProjectHandler {
+	return &ProjectHandler{svc: svc, store: s}
 }
 
 func (h *ProjectHandler) List(c *gin.Context) {
 	params := bindListParams(c)
 	orgID := middleware.GetOrgID(c)
 
-	projects, total, err := h.svc.List(c.Request.Context(), orgID, params)
+	// A member restricted to specific projects must not see the rest of the org
+	// listed here — the IDs alone are enough to drive the per-project routes.
+	granted, err := grantedProjectIDs(c, h.store)
+	if err != nil {
+		httputil.RespondError(c, err)
+		return
+	}
+
+	projects, total, err := h.svc.List(c.Request.Context(), orgID, params, granted)
 	if err != nil {
 		httputil.RespondError(c, err)
 		return
@@ -37,6 +46,21 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	var input service.CreateProjectInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		httputil.RespondError(c, apierr.ErrValidation.WithDetail(err.Error()))
+		return
+	}
+
+	// Explicit project grants exist to narrow a member to those projects, so a
+	// scoped member does not get to create more. Granting them access to what
+	// they create would be worse still: a read-only viewer would come out of it
+	// holding admin on a brand new project.
+	granted, err := grantedProjectIDs(c, h.store)
+	if err != nil {
+		httputil.RespondError(c, err)
+		return
+	}
+	if len(granted) > 0 {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail(
+			"your access is limited to specific projects — ask an owner or admin to create a new one"))
 		return
 	}
 

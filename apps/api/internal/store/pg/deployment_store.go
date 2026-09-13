@@ -11,7 +11,7 @@ import (
 )
 
 type deploymentStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *deploymentStore) GetByID(ctx context.Context, id uuid.UUID) (*model.Deployment, error) {
@@ -46,6 +46,21 @@ func (s *deploymentStore) ListAll(ctx context.Context, params store.ListParams, 
 	var deploys []model.Deployment
 	q := s.db.NewSelect().Model(&deploys)
 
+	// Scope through the application rather than deployments.project_id: that
+	// column is nullable (ON DELETE SET NULL) and older rollback rows never set
+	// it, so filtering on it directly would silently hide those deployments.
+	if filter.OrgID != uuid.Nil {
+		q = q.Where(`app_id IN (
+			SELECT a.id FROM applications a
+			JOIN projects p ON p.id = a.project_id
+			WHERE p.org_id = ? AND p.deleted_at IS NULL AND a.deleted_at IS NULL)`, filter.OrgID)
+	}
+	if filter.ProjectIDs != nil {
+		if len(filter.ProjectIDs) == 0 {
+			return []model.Deployment{}, 0, nil
+		}
+		q = q.Where("app_id IN (SELECT id FROM applications WHERE project_id IN (?))", bun.List(filter.ProjectIDs))
+	}
 	if filter.Status != "" {
 		q = q.Where("status = ?", filter.Status)
 	}

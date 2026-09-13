@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/sailboxhq/sailbox/apps/api/internal/api/middleware"
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
 	"github.com/sailboxhq/sailbox/apps/api/internal/model"
@@ -55,14 +54,9 @@ func (h *DatabaseHandler) Create(c *gin.Context) {
 		return
 	}
 
-	// Verify project belongs to caller's org
-	project, pErr := h.store.Projects().GetByID(c.Request.Context(), input.ProjectID)
-	if pErr != nil {
-		httputil.RespondError(c, apierr.ErrNotFound.WithDetail("project not found"))
-		return
-	}
-	if project.OrgID != middleware.GetOrgID(c) {
-		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("access denied"))
+	// The project comes from the request body, so it gets the same ownership and
+	// project-grant check the :id routes get from Guard.
+	if !RequireProjectWrite(c, h.store, input.ProjectID) {
 		return
 	}
 
@@ -88,6 +82,29 @@ func (h *DatabaseHandler) Get(c *gin.Context) {
 		return
 	}
 
+	httputil.RespondOK(c, db)
+}
+
+// Update changes a running database's resource limits.
+// PATCH /api/v1/databases/:id
+func (h *DatabaseHandler) Update(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail("invalid database ID"))
+		return
+	}
+
+	var input service.UpdateResourcesInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		httputil.RespondError(c, apierr.ErrValidation.WithDetail(err.Error()))
+		return
+	}
+
+	db, err := h.svc.UpdateResources(c.Request.Context(), id, input)
+	if err != nil {
+		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
+		return
+	}
 	httputil.RespondOK(c, db)
 }
 

@@ -22,7 +22,14 @@
     "noUnusedParameters": false,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+
+    /* Module aliases — must match the resolve.alias in vite.config.ts.
+       Without these, tsc cannot resolve any "@/..." import and every type
+       check silently degrades to a wall of TS2307s. */
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src"]
 }

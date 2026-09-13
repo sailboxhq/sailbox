@@ -10,7 +10,7 @@ import (
 )
 
 type serverNodeStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *serverNodeStore) GetByID(ctx context.Context, id uuid.UUID) (*model.ServerNode, error) {

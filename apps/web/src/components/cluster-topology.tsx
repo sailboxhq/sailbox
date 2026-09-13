@@ -1,6 +1,7 @@
 import Dagre from "@dagrejs/dagre";
 import {
   Background,
+  type BuiltInEdge,
   type Edge,
   Handle,
   type Node,
@@ -118,7 +119,9 @@ function makeEdge(
   target: string,
   color: string,
   animated = false,
-): Edge {
+  // pathOptions is specific to the smoothstep edge, so the return type is the
+  // built-in edge union rather than the generic Edge.
+): BuiltInEdge {
   return {
     id,
     source,

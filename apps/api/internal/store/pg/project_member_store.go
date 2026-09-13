@@ -10,7 +10,7 @@ import (
 )
 
 type projectMemberStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *projectMemberStore) Create(ctx context.Context, pm *model.ProjectMember) error {
@@ -55,4 +55,22 @@ func (s *projectMemberStore) GetByProjectAndUser(ctx context.Context, projectID,
 		Where("user_id = ?", userID).
 		Scan(ctx)
 	return pm, err
+}
+
+func (s *projectMemberStore) ListByUserInOrg(ctx context.Context, userID, orgID uuid.UUID) ([]model.ProjectMember, error) {
+	var members []model.ProjectMember
+	err := s.db.NewSelect().
+		Model(&members).
+		Where("user_id = ?", userID).
+		Where("project_id IN (SELECT id FROM projects WHERE org_id = ? AND deleted_at IS NULL)", orgID).
+		Scan(ctx)
+	return members, err
+}
+
+func (s *projectMemberStore) DeleteByUser(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.NewDelete().
+		Model((*model.ProjectMember)(nil)).
+		Where("user_id = ?", userID).
+		Exec(ctx)
+	return err
 }

@@ -10,7 +10,7 @@ import (
 )
 
 type organizationStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *organizationStore) GetByID(ctx context.Context, id uuid.UUID) (*model.Organization, error) {

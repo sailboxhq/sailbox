@@ -11,7 +11,7 @@ import (
 )
 
 type templateStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *templateStore) GetByID(ctx context.Context, id uuid.UUID) (*model.Template, error) {

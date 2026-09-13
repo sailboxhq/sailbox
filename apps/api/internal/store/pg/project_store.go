@@ -11,7 +11,7 @@ import (
 )
 
 type projectStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *projectStore) GetByID(ctx context.Context, id uuid.UUID) (*model.Project, error) {
@@ -35,11 +35,16 @@ func (s *projectStore) Delete(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-func (s *projectStore) ListByOrg(ctx context.Context, orgID uuid.UUID, params store.ListParams) ([]model.Project, int, error) {
+func (s *projectStore) ListByOrg(ctx context.Context, orgID uuid.UUID, params store.ListParams, projectIDs []uuid.UUID) ([]model.Project, int, error) {
 	var projects []model.Project
-	count, err := s.db.NewSelect().
-		Model(&projects).
-		Where("org_id = ?", orgID).
+	q := s.db.NewSelect().Model(&projects).Where("org_id = ?", orgID)
+	if projectIDs != nil {
+		if len(projectIDs) == 0 {
+			return []model.Project{}, 0, nil
+		}
+		q = q.Where("id IN (?)", bun.List(projectIDs))
+	}
+	count, err := q.
 		OrderExpr("created_at DESC").
 		Limit(params.Limit()).
 		Offset(params.Offset()).

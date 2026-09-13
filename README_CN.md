@@ -75,7 +75,7 @@ curl -sSL https://get.sailbox.dev/upgrade | sudo sh
 - PostgreSQL · MySQL · MariaDB · Redis · MongoDB
 - 连接信息、NodePort 外部访问
 - 自动 S3 备份，支持自定义计划和保留策略
-- 版本管理与健康探测
+- 版本选择、CPU/内存限额可调、健康探测
 
 #### 定时任务
 - 原生 Kubernetes CronJob

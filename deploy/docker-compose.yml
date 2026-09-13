@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: sailbox
       POSTGRES_PASSWORD: sailbox
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
       - ./initdb:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sailbox"]

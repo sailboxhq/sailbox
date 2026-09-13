@@ -10,7 +10,7 @@ import (
 )
 
 type settingStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *settingStore) Get(ctx context.Context, key string) (string, error) {

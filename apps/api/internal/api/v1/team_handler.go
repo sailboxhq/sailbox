@@ -130,12 +130,16 @@ func (h *TeamHandler) AcceptInvitation(c *gin.Context) {
 	}
 
 	userID := middleware.GetUserID(c)
-	if err := h.svc.AcceptInvitation(c.Request.Context(), input.Token, userID); err != nil {
+	// Joining an organization revokes the caller's current tokens, so the
+	// replacements come back here — the client must swap them in or it is
+	// holding a session that no longer works.
+	result, err := h.svc.AcceptInvitation(c.Request.Context(), input.Token, userID)
+	if err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
 
-	httputil.RespondOK(c, gin.H{"message": "invitation accepted"})
+	httputil.RespondOK(c, result)
 }
 
 // ListInvitations returns all invitations for the current organization.
@@ -158,7 +162,7 @@ func (h *TeamHandler) CancelInvitation(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.CancelInvitation(c.Request.Context(), invID); err != nil {
+	if err := h.svc.CancelInvitation(c.Request.Context(), middleware.GetOrgID(c), invID); err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
@@ -188,7 +192,7 @@ func (h *TeamHandler) SetProjectAccess(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.SetProjectAccess(c.Request.Context(), projectID, userID, input.Role); err != nil {
+	if err := h.svc.SetProjectAccess(c.Request.Context(), middleware.GetOrgID(c), projectID, userID, input.Role); err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}
@@ -210,7 +214,7 @@ func (h *TeamHandler) RemoveProjectAccess(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.RemoveProjectAccess(c.Request.Context(), projectID, userID); err != nil {
+	if err := h.svc.RemoveProjectAccess(c.Request.Context(), middleware.GetOrgID(c), projectID, userID); err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))
 		return
 	}

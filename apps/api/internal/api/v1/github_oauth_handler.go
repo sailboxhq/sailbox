@@ -175,6 +175,8 @@ func (h *GitHubOAuthHandler) SetupCallback(c *gin.Context) {
 	// Also save the slug for building install URLs
 	slug := appConfig.Name // GitHub App slug = name in lowercase with hyphens
 	_ = h.store.Settings().Set(ctx, "github_app_slug", slug)
+	// Track the base URL used during GitHub App creation so we can detect changes later
+	_ = h.store.Settings().Set(ctx, "github_app_base_url", h.appURL)
 
 	h.logger.Info("GitHub App created via manifest",
 		slog.Int("app_id", appConfig.ID),
@@ -221,6 +223,10 @@ func (h *GitHubOAuthHandler) Connect(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "not_configured", "message": "GitHub App not configured. Click Setup first."})
 		return
 	}
+
+	// Warn if APP_URL drifted from what the App was set up with. The App's own
+	// URLs can only be fixed by hand, so this reports rather than repairs.
+	h.reportGitHubAppURLDrift(c.Request.Context())
 
 	stateBytes := make([]byte, 16)
 	_, _ = rand.Read(stateBytes)
@@ -407,4 +413,51 @@ func (h *GitHubOAuthHandler) resolveOrgID(ctx context.Context, userIDStr string)
 		return uuid.Nil, err
 	}
 	return user.OrgID, nil
+}
+
+// reportGitHubAppURLDrift warns when APP_URL no longer matches the URL the
+// GitHub App was set up with.
+//
+// Nothing here can be applied automatically. GitHub exposes no API for an App's
+// callback, setup or homepage URLs — there is no PATCH /app endpoint at all (it
+// answers 404, while GET /app answers 401). Its webhook can be set via
+// PATCH /app/hook/config, but Sailbox has no App-level webhook endpoint to point
+// it at: the only registered route is the per-application
+// /api/v1/webhooks/github/:appId, which users wire into a repository themselves.
+// Writing that URL would configure GitHub to deliver to a 404 and would silently
+// undo a correction an operator had made by hand.
+//
+// Nor can the fix be confirmed: none of the affected URLs are readable back. So
+// this only ever warns, and deliberately does not touch github_app_base_url —
+// that records what the App was actually created with, written once by the setup
+// callback. Marking it "synced" here would turn an unresolved misconfiguration
+// into silence after a single request; instead the warning repeats until setup
+// is run again against the current APP_URL.
+func (h *GitHubOAuthHandler) reportGitHubAppURLDrift(ctx context.Context) {
+	appIDStr, _ := h.store.Settings().Get(ctx, "github_app_id")
+	pemKey, _ := h.store.Settings().Get(ctx, "github_app_pem")
+	if appIDStr == "" || pemKey == "" {
+		return // App not fully configured — nothing to compare against
+	}
+
+	savedURL, _ := h.store.Settings().Get(ctx, "github_app_base_url")
+	if savedURL == h.appURL {
+		return // Matches what the App was set up with
+	}
+
+	if savedURL == "" {
+		h.logger.Warn("GitHub App predates URL tracking — verify its URLs match this instance",
+			slog.String("app_url", h.appURL),
+		)
+	} else {
+		h.logger.Warn("APP_URL changed since the GitHub App was set up",
+			slog.String("configured_with", savedURL),
+			slog.String("now", h.appURL),
+		)
+	}
+	h.logger.Warn("update these in the GitHub App settings, then re-run GitHub setup to clear this warning",
+		slog.String("callback_url", h.appURL+"/api/v1/auth/github/callback"),
+		slog.String("setup_url", h.appURL+"/api/v1/auth/github/setup/callback"),
+		slog.String("settings", "https://github.com/settings/apps"),
+	)
 }

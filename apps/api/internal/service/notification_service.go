@@ -45,6 +45,17 @@ func (s *NotificationService) ListChannels(ctx context.Context, orgID uuid.UUID)
 
 // SaveChannel creates or updates a notification channel.
 func (s *NotificationService) SaveChannel(ctx context.Context, orgID uuid.UUID, channelType string, enabled bool, config json.RawMessage) error {
+	// Clients see credentials redacted, so a field coming back as the
+	// placeholder means "unchanged" rather than "set it to bullets".
+	if len(config) > 0 {
+		if existing, err := s.store.NotificationChannels().GetByOrgAndType(ctx, orgID, channelType); err == nil {
+			merged, mergeErr := mergeRedactedConfig(existing.Config, config)
+			if mergeErr != nil {
+				return mergeErr
+			}
+			config = merged
+		}
+	}
 	ch := &model.NotificationChannel{
 		OrgID:   orgID,
 		Type:    model.NotificationChannelType(channelType),
@@ -162,9 +173,20 @@ func eventSeverity(event model.NotifyEvent) string {
 	}
 }
 
-// GetSMTPConfig returns the current SMTP configuration.
+// GetSMTPConfig returns the current SMTP configuration for display, with the
+// password redacted. Saving the config back with the placeholder in place keeps
+// the stored password (see SettingService.SaveSMTPConfig). Code that actually
+// sends mail reads the unredacted config from SettingService directly.
 func (s *NotificationService) GetSMTPConfig(ctx context.Context) (*SMTPConfig, error) {
-	return s.settings.GetSMTPConfig(ctx)
+	cfg, err := s.settings.GetSMTPConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	redacted := *cfg
+	if redacted.Password != "" {
+		redacted.Password = model.RedactedValue
+	}
+	return &redacted, nil
 }
 
 // SaveSMTPConfig saves the SMTP configuration.

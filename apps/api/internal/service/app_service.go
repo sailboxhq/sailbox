@@ -177,9 +177,10 @@ func guessContainerPort(image string) int {
 
 type UpdateAppInput struct {
 	// Source configuration
-	GitRepo     *string `json:"git_repo"`
-	GitBranch   *string `json:"git_branch"`
-	DockerImage *string `json:"docker_image"`
+	GitRepo       *string    `json:"git_repo"`
+	GitBranch     *string    `json:"git_branch"`
+	GitProviderID *uuid.UUID `json:"git_provider_id"`
+	DockerImage   *string    `json:"docker_image"`
 
 	// Build configuration
 	BuildType    *string           `json:"build_type"`
@@ -228,6 +229,21 @@ func (s *AppService) Update(ctx context.Context, id uuid.UUID, input UpdateAppIn
 			return nil, fmt.Errorf("git branch cannot be empty")
 		}
 		app.GitBranch = *input.GitBranch
+	}
+	if input.GitProviderID != nil {
+		// Validate git provider belongs to same org
+		project, err := s.store.Projects().GetByID(ctx, app.ProjectID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load project: %w", err)
+		}
+		res, err := s.store.SharedResources().GetByID(ctx, *input.GitProviderID)
+		if err != nil {
+			return nil, fmt.Errorf("git provider not found: %w", err)
+		}
+		if res.OrgID != project.OrgID {
+			return nil, fmt.Errorf("git provider does not belong to this organization")
+		}
+		app.GitProviderID = input.GitProviderID
 	}
 	if input.DockerImage != nil {
 		if app.SourceType == model.SourceImage && strings.TrimSpace(*input.DockerImage) == "" {
@@ -561,7 +577,15 @@ func (s *AppService) Delete(ctx context.Context, id uuid.UUID) error {
 		}
 	}
 
-	return s.store.Applications().Delete(ctx, id)
+	// Applications are soft-deleted, which does not cascade to domains. Left
+	// behind, those rows keep holding the host in the active-host unique index
+	// and no other app could ever use that domain again.
+	return s.store.RunInTx(ctx, func(ctx context.Context, tx store.Store) error {
+		if err := tx.Domains().DeleteByApp(ctx, id); err != nil {
+			return fmt.Errorf("delete domains: %w", err)
+		}
+		return tx.Applications().Delete(ctx, id)
+	})
 }
 
 func (s *AppService) Scale(ctx context.Context, id uuid.UUID, replicas int32) (*model.Application, error) {

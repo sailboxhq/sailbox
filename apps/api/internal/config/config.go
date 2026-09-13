@@ -65,8 +65,12 @@ func Load() (*Config, error) {
 			InCluster:  envBool("K8S_IN_CLUSTER", false),
 		},
 		Auth: AuthConfig{
-			JWTSecret:     envStr("JWT_SECRET", ""),
-			TokenExpiry:   envDuration("JWT_TOKEN_EXPIRY", 24*time.Hour),
+			JWTSecret: envStr("JWT_SECRET", ""),
+			// Access tokens are validated from their signature alone, so their
+			// lifetime is how long a revoked session (password change, role
+			// change, removed member) stays usable. Keep it short — the web
+			// client silently refreshes.
+			TokenExpiry:   envDuration("JWT_TOKEN_EXPIRY", 15*time.Minute),
 			RefreshExpiry: envDuration("JWT_REFRESH_EXPIRY", 7*24*time.Hour),
 			SetupSecret:   envStr("SETUP_SECRET", ""),
 		},

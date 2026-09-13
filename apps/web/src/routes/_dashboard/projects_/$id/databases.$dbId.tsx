@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
   Copy,
+  Cpu,
   Database,
   Eye,
   EyeOff,
@@ -52,6 +53,7 @@ import {
   useTriggerBackup,
   useUpdateBackupConfig,
   useUpdateExternalAccess,
+  useUpdateResources,
   useUsedPorts,
 } from "@/hooks/use-databases";
 import { useResources } from "@/hooks/use-resources";
@@ -355,6 +357,70 @@ const ENGINE_DEFAULT_PORT: Record<string, number> = {
   mongo: 30017,
 };
 
+function ResourceLimitsCard({ db }: { db: ManagedDB }) {
+  const updateResources = useUpdateResources(db.id);
+  const [cpu, setCpu] = useState(db.cpu_limit);
+  const [mem, setMem] = useState(db.mem_limit);
+
+  // Re-sync when the database is refetched (e.g. after a save elsewhere)
+  useEffect(() => {
+    setCpu(db.cpu_limit);
+    setMem(db.mem_limit);
+  }, [db.cpu_limit, db.mem_limit]);
+
+  const dirty = cpu !== db.cpu_limit || mem !== db.mem_limit;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <Cpu className="h-4 w-4" /> Resource Limits
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          Saving restarts the database to apply the new limits. Engine version and storage size
+          cannot be changed here — a version upgrade needs a data migration, and storage is expanded
+          from the Cluster page.
+        </p>
+
+        <div className="flex flex-wrap gap-4">
+          <div className="space-y-2">
+            <Label className="text-sm">CPU limit</Label>
+            <Input
+              value={cpu}
+              onChange={(e) => setCpu(e.target.value)}
+              placeholder="500m"
+              className="max-w-[160px] font-mono"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-sm">Memory limit</Label>
+            <Input
+              value={mem}
+              onChange={(e) => setMem(e.target.value)}
+              placeholder="512Mi"
+              className="max-w-[160px] font-mono"
+            />
+          </div>
+        </div>
+
+        <Button
+          onClick={() => updateResources.mutate({ cpu_limit: cpu, mem_limit: mem })}
+          disabled={!dirty || !cpu.trim() || !mem.trim() || updateResources.isPending}
+        >
+          {updateResources.isPending ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Save className="mr-2 h-4 w-4" />
+          )}
+          Save
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ExternalAccessCard({ db }: { db: ManagedDB }) {
   const updateExternal = useUpdateExternalAccess(db.id);
   const { data: rawUsedPorts } = useUsedPorts();
@@ -490,7 +556,9 @@ function BackupConfigCard({ db }: { db: ManagedDB }) {
 
   const [enabled, setEnabled] = useState(db.backup_enabled);
   const [s3Id, setS3Id] = useState(db.backup_s3_id || "");
-  const [schedulePreset, setSchedulePreset] = useState(() => {
+  // Widened to string: the value comes back from a <Select>, which is
+  // string-valued, and "custom" swaps in a free-form cron expression.
+  const [schedulePreset, setSchedulePreset] = useState<string>(() => {
     const match = BACKUP_SCHEDULE_PRESETS.find((p) => p.value === db.backup_schedule);
     return match ? match.value : db.backup_schedule ? "custom" : "0 2 * * *";
   });
@@ -888,6 +956,9 @@ function DatabaseDetailPage() {
 
           {/* ── Settings Tab ── */}
           <TabsContent value="settings" className="mt-4 space-y-6">
+            {/* Resource Limits */}
+            <ResourceLimitsCard db={db} />
+
             {/* External Access */}
             <ExternalAccessCard db={db} />
 

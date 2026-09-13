@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
+	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/service"
 )
 
@@ -27,9 +28,20 @@ func (h *SettingHandler) GetAll(c *gin.Context) {
 		httputil.RespondError(c, err)
 		return
 	}
-	// Convert to map for easier frontend consumption
+	// Convert to map for easier frontend consumption. Credentials live in the
+	// same table, so they are redacted rather than returned — a configured
+	// secret still shows up, just without its value.
 	result := make(map[string]string)
 	for _, s := range settings {
+		if model.IsInternalSetting(s.Key) {
+			continue
+		}
+		if model.IsSecretSetting(s.Key) {
+			if s.Value != "" {
+				result[s.Key] = model.RedactedValue
+			}
+			continue
+		}
 		result[s.Key] = s.Value
 	}
 	httputil.RespondOK(c, result)
@@ -42,6 +54,12 @@ func (h *SettingHandler) Update(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		httputil.RespondError(c, apierr.ErrValidation.WithDetail(err.Error()))
+		return
+	}
+	// Only an explicit allowlist is settable through the API — the same table
+	// also holds credentials and server-derived values.
+	if !model.IsWritableSetting(input.Key) {
+		httputil.RespondError(c, apierr.ErrForbidden.WithDetail("setting is not writable: "+input.Key))
 		return
 	}
 	if err := h.svc.Set(c.Request.Context(), input.Key, input.Value); err != nil {

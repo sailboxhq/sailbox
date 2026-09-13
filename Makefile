@@ -28,7 +28,7 @@ dev: docker-up ## Start full dev environment
 dev-api: ## Start Go API with hot reload
 	cd $(API_DIR) && air
 
-dev-web: ## Start Next.js dev server
+dev-web: ## Start web dev server (Vite)
 	cd $(WEB_DIR) && bun dev
 
 # ============================================================================

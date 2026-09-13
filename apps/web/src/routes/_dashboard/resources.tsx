@@ -743,7 +743,9 @@ function ResourceCard({
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const config = r.config as Record<string, string>;
   const publicKey = type === "ssh_key" ? config?.public_key : null;
-  const privateKey = type === "ssh_key" ? config?.private_key : null;
+  // The private key never leaves the server — the API returns it redacted, so
+  // we only show whether one is stored.
+  const hasPrivateKey = type === "ssh_key" && Boolean(config?.private_key);
 
   function copyToClipboard(text: string, label: string) {
     navigator.clipboard.writeText(text);
@@ -799,7 +801,7 @@ function ResourceCard({
         </div>
 
         {/* SSH Key: public + private key with copy buttons */}
-        {(publicKey || privateKey) && (
+        {(publicKey || hasPrivateKey) && (
           <div className="mt-3 space-y-2">
             {publicKey && (
               <div className="space-y-1">
@@ -824,26 +826,13 @@ function ResourceCard({
                 </div>
               </div>
             )}
-            {privateKey && (
+            {hasPrivateKey && (
               <div className="space-y-1">
                 <p className="text-xs font-medium text-muted-foreground">Private Key</p>
-                <div className="flex items-start gap-2 rounded-lg border bg-muted p-3">
-                  <code className="flex-1 break-all font-mono text-xs text-foreground">
-                    {privateKey.slice(0, 60)}...
+                <div className="flex items-center gap-2 rounded-lg border bg-muted p-3">
+                  <code className="flex-1 font-mono text-xs text-muted-foreground">
+                    Stored securely — never displayed
                   </code>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0"
-                    onClick={() => copyToClipboard(privateKey, "Private key")}
-                    title="Copy private key"
-                  >
-                    {copiedField === "Private key" ? (
-                      <Check className="h-3.5 w-3.5 text-green-500" />
-                    ) : (
-                      <Copy className="h-3.5 w-3.5" />
-                    )}
-                  </Button>
                 </div>
               </div>
             )}

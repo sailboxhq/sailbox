@@ -128,6 +128,15 @@ func (n *NoopOrchestrator) DeployDatabase(ctx context.Context, db *model.Managed
 	return nil
 }
 
+func (n *NoopOrchestrator) UpdateDatabaseResources(ctx context.Context, db *model.ManagedDatabase) error {
+	n.logger.Info("[noop] update database resources",
+		slog.String("name", db.Name),
+		slog.String("cpu", db.CPULimit),
+		slog.String("memory", db.MemLimit),
+	)
+	return nil
+}
+
 func (n *NoopOrchestrator) DeleteDatabase(ctx context.Context, db *model.ManagedDatabase) error {
 	n.logger.Info("[noop] delete database", slog.String("name", db.Name))
 	return nil

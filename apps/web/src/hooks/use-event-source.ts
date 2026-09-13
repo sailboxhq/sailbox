@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
+import { api } from "@/lib/api";
 
 /**
  * Maps a DB table name from PG NOTIFY to the TanStack Query keys that should
@@ -45,7 +46,7 @@ export function useEventSource() {
   const qc = useQueryClient();
   const retryRef = useRef(0);
   const pendingRef = useRef(new Map<string, string[]>());
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -66,8 +67,14 @@ export function useEventSource() {
       flushTimerRef.current = setTimeout(flush, THROTTLE_MS);
     }
 
-    function connect() {
-      const token = localStorage.getItem("sailbox_token") || "";
+    let closed = false;
+
+    async function connect() {
+      // Refresh first when the access token is spent: the stream carries it in
+      // the URL and cannot retry a 401 on its own, so a reconnect after expiry
+      // would otherwise back off and fail forever.
+      const token = (await api.ensureFreshToken()) || "";
+      if (closed) return;
       const url = `${window.location.origin}/ws/events?token=${encodeURIComponent(token)}`;
       es = new EventSource(url);
 
@@ -100,13 +107,16 @@ export function useEventSource() {
         es = null;
         const delay = Math.min(1000 * 2 ** retryRef.current, 30_000);
         retryRef.current++;
-        reconnectTimer = setTimeout(connect, delay);
+        reconnectTimer = setTimeout(() => {
+          void connect();
+        }, delay);
       };
     }
 
-    connect();
+    void connect();
 
     return () => {
+      closed = true;
       es?.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);

@@ -170,6 +170,19 @@ export function useUpdateExternalAccess(dbId: string) {
   });
 }
 
+export function useUpdateResources(dbId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { cpu_limit?: string; mem_limit?: string }) =>
+      api.patch(`/api/v1/databases/${dbId}`, data),
+    onSuccess: () => {
+      toast.success("Resource limits updated — the database is restarting");
+      qc.invalidateQueries({ queryKey: ["databases"] });
+    },
+    onError: (err: any) => toast.error(err?.detail || "Failed to update resource limits"),
+  });
+}
+
 export function useUpdateBackupConfig(dbId: string) {
   const qc = useQueryClient();
   return useMutation({

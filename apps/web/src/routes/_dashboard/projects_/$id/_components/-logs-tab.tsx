@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getToken } from "@/lib/auth";
+import { api } from "@/lib/api";
 import type { PodInfo } from "@/types/api";
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -95,9 +95,10 @@ function WebTerminal({ appId, pods }: { appId: string; pods: PodInfo[] }) {
     fitAddon.fit();
     termRef.current = { term, fitAddon };
 
-    // Connect WebSocket
+    // Connect WebSocket. The token rides in the URL and the socket cannot retry
+    // a 401 of its own, so refresh it first if it is spent.
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const token = getToken();
+    const token = await api.ensureFreshToken();
     const ws = new WebSocket(
       `${proto}//${window.location.host}/ws/terminal/${appId}?token=${encodeURIComponent(token || "")}`,
     );
@@ -231,10 +232,10 @@ export function LogsTab({
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logsLength]);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     wsRef.current?.close();
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const token = getToken() || "";
+    const token = (await api.ensureFreshToken()) || "";
     const params = new URLSearchParams({ token });
     if (selectedPod && selectedPod !== "__all__") {
       params.set("pod", selectedPod);
@@ -259,7 +260,7 @@ export function LogsTab({
   // biome-ignore lint/correctness/useExhaustiveDependencies: only reconnect on pod change, not on connect/connected identity
   useEffect(() => {
     if (connected) {
-      connect();
+      void connect();
     }
   }, [selectedPod]);
 

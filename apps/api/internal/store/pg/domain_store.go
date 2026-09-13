@@ -10,7 +10,7 @@ import (
 )
 
 type domainStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *domainStore) GetByID(ctx context.Context, id uuid.UUID) (*model.Domain, error) {
@@ -44,4 +44,17 @@ func (s *domainStore) GetByHost(ctx context.Context, host string) (*model.Domain
 	domain := new(model.Domain)
 	err := s.db.NewSelect().Model(domain).Where("host = ?", host).Scan(ctx)
 	return domain, err
+}
+
+func (s *domainStore) DeleteByApp(ctx context.Context, appID uuid.UUID) error {
+	_, err := s.db.NewDelete().Model((*model.Domain)(nil)).Where("app_id = ?", appID).Exec(ctx)
+	return err
+}
+
+func (s *domainStore) DeleteByProject(ctx context.Context, projectID uuid.UUID) error {
+	_, err := s.db.NewDelete().
+		Model((*model.Domain)(nil)).
+		Where("app_id IN (SELECT id FROM applications WHERE project_id = ?)", projectID).
+		Exec(ctx)
+	return err
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/sailboxhq/sailbox/apps/api/internal/api/middleware"
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
+	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/service"
 )
 
@@ -25,7 +26,7 @@ func (h *ResourceHandler) List(c *gin.Context) {
 		httputil.RespondError(c, err)
 		return
 	}
-	httputil.RespondList(c, resources)
+	httputil.RespondList(c, redactResources(resources))
 }
 
 func (h *ResourceHandler) Create(c *gin.Context) {
@@ -40,7 +41,7 @@ func (h *ResourceHandler) Create(c *gin.Context) {
 		httputil.RespondError(c, err)
 		return
 	}
-	httputil.RespondCreated(c, resource, "")
+	httputil.RespondCreated(c, resource.Redacted(), "")
 }
 
 func (h *ResourceHandler) Update(c *gin.Context) {
@@ -60,7 +61,7 @@ func (h *ResourceHandler) Update(c *gin.Context) {
 		httputil.RespondError(c, err)
 		return
 	}
-	httputil.RespondOK(c, resource)
+	httputil.RespondOK(c, resource.Redacted())
 }
 
 func (h *ResourceHandler) Delete(c *gin.Context) {
@@ -128,5 +129,18 @@ func (h *ResourceHandler) GenerateSSHKey(c *gin.Context) {
 		httputil.RespondError(c, err)
 		return
 	}
-	httputil.RespondCreated(c, resource, "")
+	// The private key stays server-side; the caller gets the public half, which
+	// is what has to be registered with the git host.
+	httputil.RespondCreated(c, resource.Redacted(), "")
+}
+
+// redactResources strips credentials from a list of resources before it leaves
+// the API. Internal callers keep using the service/store directly, which still
+// return the real values.
+func redactResources(resources []model.SharedResource) []model.SharedResource {
+	out := make([]model.SharedResource, 0, len(resources))
+	for i := range resources {
+		out = append(out, *resources[i].Redacted())
+	}
+	return out
 }

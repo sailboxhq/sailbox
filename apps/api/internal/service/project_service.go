@@ -118,8 +118,10 @@ func (s *ProjectService) GetByID(ctx context.Context, id uuid.UUID) (*model.Proj
 	return s.store.Projects().GetByID(ctx, id)
 }
 
-func (s *ProjectService) List(ctx context.Context, orgID uuid.UUID, params store.ListParams) ([]model.Project, int, error) {
-	return s.store.Projects().ListByOrg(ctx, orgID, params)
+// List returns an org's projects. projectIDs, when non-nil, narrows the result
+// to projects the caller has been granted.
+func (s *ProjectService) List(ctx context.Context, orgID uuid.UUID, params store.ListParams, projectIDs []uuid.UUID) ([]model.Project, int, error) {
+	return s.store.Projects().ListByOrg(ctx, orgID, params, projectIDs)
 }
 
 func (s *ProjectService) Update(ctx context.Context, id uuid.UUID, input UpdateProjectInput) (*model.Project, error) {
@@ -223,12 +225,31 @@ func (s *ProjectService) Delete(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 
-	// Delete K8s namespace if one was assigned
+	// Delete K8s namespace if one was assigned — this removes the cluster-side
+	// objects for every app, database and cron job in the project.
 	if project.Namespace != "" {
 		if err := s.orch.DeleteNamespace(ctx, project.Namespace); err != nil {
 			s.logger.Error("failed to delete K8s namespace", slog.Any("error", err), slog.String("namespace", project.Namespace))
 		}
 	}
 
-	return s.store.Projects().Delete(ctx, id)
+	// The database side needs the same treatment. Projects are soft-deleted, so
+	// the ON DELETE CASCADE never fires: without this the project's apps and
+	// databases stay live rows pointing at a deleted project and keep showing
+	// up in global listings and search.
+	return s.store.RunInTx(ctx, func(ctx context.Context, tx store.Store) error {
+		if err := tx.Domains().DeleteByProject(ctx, id); err != nil {
+			return fmt.Errorf("delete domains: %w", err)
+		}
+		if err := tx.Applications().DeleteByProject(ctx, id); err != nil {
+			return fmt.Errorf("delete applications: %w", err)
+		}
+		if err := tx.ManagedDatabases().DeleteByProject(ctx, id); err != nil {
+			return fmt.Errorf("delete databases: %w", err)
+		}
+		if err := tx.CronJobs().DeleteByProject(ctx, id); err != nil {
+			return fmt.Errorf("delete cron jobs: %w", err)
+		}
+		return tx.Projects().Delete(ctx, id)
+	})
 }

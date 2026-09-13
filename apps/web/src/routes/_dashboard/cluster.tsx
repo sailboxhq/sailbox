@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   Activity,
   Box,
@@ -86,7 +86,7 @@ import {
 } from "@/hooks/use-monitoring";
 import { useCreateNode, useDeleteNode, useInitializeNode, useNodes } from "@/hooks/use-nodes";
 import { useResources } from "@/hooks/use-resources";
-import { getToken } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { statusVariant } from "@/lib/constants";
 import type {
   DaemonSetInfo,
@@ -391,8 +391,8 @@ function NodeTrendCharts() {
                     border: "1px solid var(--color-border)",
                     background: "var(--color-popover)",
                   }}
-                  formatter={(v: number, name: string) => [
-                    `${v}m`,
+                  formatter={(value, name) => [
+                    `${Number(value)}m`,
                     name === "cpu" ? "Used" : "Total",
                   ]}
                 />
@@ -469,8 +469,8 @@ function NodeTrendCharts() {
                     border: "1px solid var(--color-border)",
                     background: "var(--color-popover)",
                   }}
-                  formatter={(v: number, name: string) => [
-                    `${v} Mi`,
+                  formatter={(value, name) => [
+                    `${Number(value)} Mi`,
                     name === "mem" ? "Used" : "Total",
                   ]}
                 />
@@ -791,9 +791,11 @@ function AddNodeSheet({
     }
   }, [logsLength]);
 
-  const connectWs = useCallback((nodeId: string) => {
+  const connectWs = useCallback(async (nodeId: string) => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const token = getToken();
+    // Refresh a spent token before opening: the socket carries it in the URL and
+    // has no way to retry a 401.
+    const token = (await api.ensureFreshToken()) || "";
     const wsUrl = `${protocol}//${window.location.host}/ws/nodes/${nodeId}/logs?token=${token}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -850,7 +852,7 @@ function AddNodeSheet({
       setCreatedNodeId(node.id);
       setLogs((prev) => [...prev, `Node "${node.name}" created. Starting initialization...`]);
 
-      connectWs(node.id);
+      void connectWs(node.id);
       await initializeNode.mutateAsync(node.id);
     } catch {
       setPhase("error");

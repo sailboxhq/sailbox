@@ -11,7 +11,7 @@ import (
 )
 
 type cronJobStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *cronJobStore) GetByID(ctx context.Context, id uuid.UUID) (*model.CronJob, error) {
@@ -50,7 +50,7 @@ func (s *cronJobStore) ListByProject(ctx context.Context, projectID uuid.UUID, p
 // ── CronJobRun store ─────────────────────────────────────────────────
 
 type cronJobRunStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *cronJobRunStore) GetByID(ctx context.Context, id uuid.UUID) (*model.CronJobRun, error) {
@@ -79,4 +79,9 @@ func (s *cronJobRunStore) ListByCronJob(ctx context.Context, cronJobID uuid.UUID
 		Offset(params.Offset()).
 		ScanAndCount(ctx)
 	return runs, count, err
+}
+
+func (s *cronJobStore) DeleteByProject(ctx context.Context, projectID uuid.UUID) error {
+	_, err := s.db.NewDelete().Model((*model.CronJob)(nil)).Where("project_id = ?", projectID).Exec(ctx)
+	return err
 }

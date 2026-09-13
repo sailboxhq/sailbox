@@ -114,6 +114,15 @@ func dbUsername(engine model.DBEngine) string {
 // dbName returns the default database name for the engine.
 // dbDatabaseName is no longer used — database name comes from db.Name
 
+// DeployDatabase provisions a managed database.
+//
+// It is create-only and idempotent: every object is created and an AlreadyExists
+// is treated as success, so calling it again never rewrites an existing
+// StatefulSet. That is deliberate — changing a running database's image or data
+// path in place would move PGDATA out from under an initialised cluster. It also
+// means configuration changes (version, CPU/memory limits, storage size) do not
+// reach an already-provisioned database; that needs a real update/migration
+// path, not a silent re-apply.
 func (o *Orchestrator) DeployDatabase(ctx context.Context, db *model.ManagedDatabase) error {
 	ns := dbNamespace(db)
 	k8sName := dbK8sName(db)
@@ -154,19 +163,21 @@ func (o *Orchestrator) DeployDatabase(ctx context.Context, db *model.ManagedData
 		ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: ns, Labels: labels},
 		StringData: secretData,
 	}
-	existing, err := o.client.CoreV1().Secrets(ns).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			if _, createErr := o.client.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{}); createErr != nil {
-				return createErr
-			}
+	_, err := o.client.CoreV1().Secrets(ns).Get(ctx, secretName, metav1.GetOptions{})
+	switch {
+	case errors.IsNotFound(err):
+		if _, createErr := o.client.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{}); createErr != nil {
+			return fmt.Errorf("create credentials secret: %w", createErr)
 		}
-	} else {
-		// Reuse existing password to avoid credential mismatch on retry
-		if p, ok := existing.Data["SAILBOX_PASSWORD"]; ok {
-			password = string(p)
-			_ = dbConnectionString(db.Engine, host, port, password, db.DatabaseName) // connection string recomputed if needed
-		}
+	case err != nil:
+		// Anything other than "not found" (RBAC, API timeout) has to abort:
+		// carrying on would create a StatefulSet referencing a secret that may
+		// not exist, leaving the pod stuck in CreateContainerConfigError.
+		return fmt.Errorf("read credentials secret: %w", err)
+	default:
+		// The secret already exists, so this is a retry. Leave it untouched —
+		// rewriting it would rotate the password out from under a database that
+		// has already been initialised with it.
 	}
 
 	// Create PVC
@@ -201,6 +212,7 @@ func (o *Orchestrator) DeployDatabase(ctx context.Context, db *model.ManagedData
 							Name:  k8sName,
 							Image: image,
 							Ports: []corev1.ContainerPort{{ContainerPort: port}},
+							Env:   dbExtraEnv(db.Engine),
 							EnvFrom: []corev1.EnvFromSource{
 								{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: secretName}}},
 							},
@@ -254,6 +266,47 @@ func (o *Orchestrator) DeployDatabase(ctx context.Context, db *model.ManagedData
 	db.Status = "pending" // actual status will be reconciled via GetDatabaseStatus
 
 	o.logger.Info("database deployed", slog.String("name", k8sName), slog.String("engine", string(db.Engine)))
+	return nil
+}
+
+// UpdateDatabaseResources reconciles the CPU/memory limits of a running
+// database's StatefulSet. Updating the pod template rolls the pod, which for a
+// single-replica database means a short restart.
+func (o *Orchestrator) UpdateDatabaseResources(ctx context.Context, db *model.ManagedDatabase) error {
+	ns := dbNamespace(db)
+	name := dbK8sName(db)
+
+	sts, err := o.client.AppsV1().StatefulSets(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get statefulset: %w", err)
+	}
+	if len(sts.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("statefulset %q has no containers", name)
+	}
+
+	cpu, err := resource.ParseQuantity(db.CPULimit)
+	if err != nil {
+		return fmt.Errorf("invalid cpu limit %q: %w", db.CPULimit, err)
+	}
+	mem, err := resource.ParseQuantity(db.MemLimit)
+	if err != nil {
+		return fmt.Errorf("invalid memory limit %q: %w", db.MemLimit, err)
+	}
+
+	sts.Spec.Template.Spec.Containers[0].Resources.Limits = corev1.ResourceList{
+		corev1.ResourceCPU:    cpu,
+		corev1.ResourceMemory: mem,
+	}
+
+	if _, err := o.client.AppsV1().StatefulSets(ns).Update(ctx, sts, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update statefulset: %w", err)
+	}
+
+	o.logger.Info("database resources updated",
+		slog.String("name", name),
+		slog.String("cpu", db.CPULimit),
+		slog.String("memory", db.MemLimit),
+	)
 	return nil
 }
 
@@ -723,7 +776,7 @@ func dbEnvSecret(engine model.DBEngine, password, dbName string) map[string]stri
 func dbDataPath(engine model.DBEngine) string {
 	switch engine {
 	case model.DBPostgres:
-		return "/var/lib/postgresql/data"
+		return "/var/lib/postgresql"
 	case model.DBMySQL, model.DBMariaDB:
 		return "/var/lib/mysql"
 	case model.DBRedis:
@@ -732,6 +785,19 @@ func dbDataPath(engine model.DBEngine) string {
 		return "/data/db"
 	default:
 		return "/data"
+	}
+}
+
+// dbExtraEnv returns engine-specific environment variables needed beyond credentials.
+func dbExtraEnv(engine model.DBEngine) []corev1.EnvVar {
+	switch engine {
+	case model.DBPostgres:
+		// PG 18+ uses version-specific subdirs under the mount point.
+		// Setting PGDATA explicitly ensures every PG version (old and new) writes
+		// to the same well-known path, avoiding the 18+ migration error.
+		return []corev1.EnvVar{{Name: "PGDATA", Value: "/var/lib/postgresql/data/pgdata"}}
+	default:
+		return nil
 	}
 }
 

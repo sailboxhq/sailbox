@@ -11,7 +11,7 @@ import (
 )
 
 type notificationChannelStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *notificationChannelStore) GetByOrgAndType(ctx context.Context, orgID uuid.UUID, channelType string) (*model.NotificationChannel, error) {

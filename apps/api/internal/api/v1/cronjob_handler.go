@@ -8,14 +8,16 @@ import (
 	"github.com/sailboxhq/sailbox/apps/api/internal/apierr"
 	"github.com/sailboxhq/sailbox/apps/api/internal/httputil"
 	"github.com/sailboxhq/sailbox/apps/api/internal/service"
+	"github.com/sailboxhq/sailbox/apps/api/internal/store"
 )
 
 type CronJobHandler struct {
-	svc *service.CronJobService
+	svc   *service.CronJobService
+	store store.Store
 }
 
-func NewCronJobHandler(svc *service.CronJobService) *CronJobHandler {
-	return &CronJobHandler{svc: svc}
+func NewCronJobHandler(svc *service.CronJobService, s store.Store) *CronJobHandler {
+	return &CronJobHandler{svc: svc, store: s}
 }
 
 func (h *CronJobHandler) ListByProject(c *gin.Context) {
@@ -39,6 +41,13 @@ func (h *CronJobHandler) Create(c *gin.Context) {
 		httputil.RespondError(c, apierr.ErrValidation.WithDetail(err.Error()))
 		return
 	}
+
+	// The project comes from the request body, so it gets the same ownership and
+	// project-grant check the :id routes get from Guard.
+	if !RequireProjectWrite(c, h.store, input.ProjectID) {
+		return
+	}
+
 	cj, err := h.svc.Create(c.Request.Context(), input)
 	if err != nil {
 		httputil.RespondError(c, apierr.ErrBadRequest.WithDetail(err.Error()))

@@ -25,10 +25,19 @@ type AuthService struct {
 	store      store.Store
 	jwtManager *auth.JWTManager
 	logger     *slog.Logger
+	sessions   auth.SessionInvalidator
 }
 
-func NewAuthService(s store.Store, jwtManager *auth.JWTManager, logger *slog.Logger) *AuthService {
-	return &AuthService{store: s, jwtManager: jwtManager, logger: logger}
+func NewAuthService(s store.Store, jwtManager *auth.JWTManager, logger *slog.Logger, sessions auth.SessionInvalidator) *AuthService {
+	return &AuthService{store: s, jwtManager: jwtManager, logger: logger, sessions: sessions}
+}
+
+// revokeSessions drops cached session state so a bumped token version takes
+// effect on the very next request instead of when the cache entry expires.
+func (s *AuthService) revokeSessions(userID uuid.UUID) {
+	if s.sessions != nil {
+		s.sessions.Invalidate(userID)
+	}
 }
 
 type RegisterInput struct {
@@ -69,38 +78,52 @@ func (s *AuthService) GetSetupStatus(ctx context.Context) (*SetupStatus, error) 
 }
 
 func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*AuthResult, error) {
-	count, _ := s.store.Users().Count(ctx)
-	if count > 0 {
-		return nil, errors.New("registration is disabled — use team invitation to join")
-	}
-
-	_, err := s.store.Users().GetByEmail(ctx, input.Email)
-	if err == nil {
-		return nil, errors.New("email already registered")
-	}
-
 	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
 	}
 
-	org := &model.Organization{Name: input.OrgName}
-	if err := s.store.Organizations().Create(ctx, org); err != nil {
-		return nil, err
-	}
-
 	user := &model.User{
-		OrgID:        org.ID,
 		Email:        input.Email,
 		PasswordHash: string(hash),
 		DisplayName:  input.DisplayName,
 		Role:         model.RoleOwner,
 	}
-	if err := s.store.Users().Create(ctx, user); err != nil {
+
+	// Registration only opens the very first account, so the "is anyone
+	// registered yet" check and the writes that answer it have to be one
+	// atomic, serialised unit — otherwise two concurrent requests both see an
+	// empty table and each create an org plus an owner. The transaction also
+	// keeps a failed user insert from leaving an orphan organization behind.
+	err = s.store.RunInTx(ctx, func(ctx context.Context, tx store.Store) error {
+		if err := tx.AcquireSetupLock(ctx); err != nil {
+			return err
+		}
+
+		count, err := tx.Users().Count(ctx)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return errors.New("registration is disabled — use team invitation to join")
+		}
+
+		if _, err := tx.Users().GetByEmail(ctx, input.Email); err == nil {
+			return errors.New("email already registered")
+		}
+
+		org := &model.Organization{Name: input.OrgName}
+		if err := tx.Organizations().Create(ctx, org); err != nil {
+			return err
+		}
+
+		user.OrgID = org.ID
+		return tx.Users().Create(ctx, user)
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	tokens, err := s.jwtManager.GenerateTokenPair(user.ID, org.ID, string(user.Role), user.TokenVersion)
+	tokens, err := s.jwtManager.GenerateTokenPair(user.ID, user.OrgID, string(user.Role), user.TokenVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -259,10 +282,11 @@ func (s *AuthService) ChangePassword(ctx context.Context, userID uuid.UUID, inpu
 	}
 
 	user.PasswordHash = string(hash)
-	user.TokenVersion++ // invalidate all existing refresh tokens
+	user.TokenVersion++ // invalidate every token issued before this change
 	if err := s.store.Users().Update(ctx, user); err != nil {
 		return err
 	}
+	s.revokeSessions(userID)
 
 	s.logger.Info("user password changed", slog.String("user_id", userID.String()))
 	return nil
@@ -309,10 +333,11 @@ func (s *AuthService) Verify2FA(ctx context.Context, userID uuid.UUID, code stri
 	}
 
 	user.TwoFAEnabled = true
-	user.TokenVersion++ // invalidate existing refresh tokens — require re-login with 2FA
+	user.TokenVersion++ // invalidate existing tokens — require re-login with 2FA
 	if err := s.store.Users().Update(ctx, user); err != nil {
 		return err
 	}
+	s.revokeSessions(userID)
 
 	s.logger.Info("2FA enabled", slog.String("user_id", userID.String()))
 	return nil

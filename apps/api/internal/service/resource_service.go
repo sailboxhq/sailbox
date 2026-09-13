@@ -239,12 +239,45 @@ func (s *ResourceService) Update(ctx context.Context, orgID, id uuid.UUID, input
 		resource.Provider = *input.Provider
 	}
 	if input.Config != nil {
-		resource.Config = *input.Config
+		merged, err := mergeRedactedConfig(resource.Config, *input.Config)
+		if err != nil {
+			return nil, err
+		}
+		resource.Config = merged
 	}
 	if err := s.store.SharedResources().Update(ctx, resource); err != nil {
 		return nil, err
 	}
 	return resource, nil
+}
+
+// mergeRedactedConfig folds an incoming config onto the stored one. Clients
+// receive credentials redacted, so a field coming back as the redaction
+// placeholder means "unchanged" — writing it through would overwrite the real
+// credential with bullet characters.
+func mergeRedactedConfig(stored, incoming json.RawMessage) (json.RawMessage, error) {
+	var next map[string]any
+	if err := json.Unmarshal(incoming, &next); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	var prev map[string]any
+	if len(stored) > 0 {
+		_ = json.Unmarshal(stored, &prev)
+	}
+	for k, v := range next {
+		if str, ok := v.(string); ok && str == model.RedactedValue {
+			if old, had := prev[k]; had {
+				next[k] = old
+			} else {
+				delete(next, k)
+			}
+		}
+	}
+	out, err := json.Marshal(next)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *ResourceService) Delete(ctx context.Context, orgID, id uuid.UUID) error {
@@ -276,7 +309,7 @@ func (s *ResourceService) Delete(ctx context.Context, orgID, id uuid.UUID) error
 	}
 
 	// Check managed databases referencing as backup S3
-	projects, _, projErr := s.store.Projects().ListByOrg(ctx, orgID, store.ListParams{Page: 1, PerPage: 10000})
+	projects, _, projErr := s.store.Projects().ListByOrg(ctx, orgID, store.ListParams{Page: 1, PerPage: 10000}, nil)
 	if projErr != nil {
 		return fmt.Errorf("cannot verify resource references: %w", projErr)
 	}

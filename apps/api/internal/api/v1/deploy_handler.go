@@ -131,8 +131,16 @@ func (h *DeployHandler) List(c *gin.Context) {
 // ListAll returns deployments across all apps with optional status filter.
 func (h *DeployHandler) ListAll(c *gin.Context) {
 	params := bindListParams(c)
+	granted, err := grantedProjectIDs(c, h.store)
+	if err != nil {
+		httputil.RespondError(c, err)
+		return
+	}
+
 	filter := store.DeploymentListFilter{
-		Status: c.Query("status"),
+		Status:     c.Query("status"),
+		OrgID:      middleware.GetOrgID(c),
+		ProjectIDs: granted,
 	}
 	deploys, total, err := h.svc.ListAll(c.Request.Context(), params, filter)
 	if err != nil {
@@ -146,10 +154,21 @@ func (h *DeployHandler) ListAll(c *gin.Context) {
 func (h *DeployHandler) ListQueue(c *gin.Context) {
 	params := bindListParams(c)
 	// Get queued + building + deploying deployments
+	granted, err := grantedProjectIDs(c, h.store)
+	if err != nil {
+		httputil.RespondError(c, err)
+		return
+	}
+
 	var allDeploys []model.Deployment
 	totalCount := 0
 	for _, status := range []string{"queued", "building", "deploying"} {
-		deploys, count, err := h.svc.ListAll(c.Request.Context(), store.ListParams{Page: 1, PerPage: 100}, store.DeploymentListFilter{Status: status})
+		deploys, count, err := h.svc.ListAll(c.Request.Context(), store.ListParams{Page: 1, PerPage: 100},
+			store.DeploymentListFilter{
+				Status:     status,
+				OrgID:      middleware.GetOrgID(c),
+				ProjectIDs: granted,
+			})
 		if err != nil {
 			continue
 		}

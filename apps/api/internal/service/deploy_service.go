@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +109,13 @@ func (s *DeployService) Trigger(ctx context.Context, input TriggerDeployInput) (
 	}
 
 	if err := s.store.Deployments().Create(ctx, deploy); err != nil {
+		// idx_deployments_one_in_flight makes "one active deployment per app" a
+		// database invariant. The status check above is a race on its own: two
+		// triggers arriving together (a double click, or a webhook alongside a
+		// manual deploy) both read a settled status before either writes a row.
+		if isUniqueViolation(err) {
+			return nil, fmt.Errorf("a deployment is already in progress for this app")
+		}
 		return nil, err
 	}
 
@@ -433,6 +441,8 @@ func (s *DeployService) Rollback(ctx context.Context, deployID uuid.UUID, trigge
 	now := time.Now()
 	deploy := &model.Deployment{
 		AppID:       app.ID,
+		AppName:     app.Name,
+		ProjectID:   app.ProjectID,
 		Status:      model.DeploySuccess,
 		Image:       prev.Image,
 		CommitSHA:   prev.CommitSHA,
@@ -450,4 +460,15 @@ func (s *DeployService) Rollback(ctx context.Context, deployID uuid.UUID, trigge
 	s.logger.Info("rollback succeeded", slog.String("app", app.Name), slog.String("to_deploy", deployID.String()))
 
 	return deploy, nil
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (SQLSTATE 23505). pgdriver surfaces these as an opaque error type,
+// so the check goes through the message.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate key") || strings.Contains(msg, "23505")
 }

@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
-import { getToken } from "@/lib/auth";
+import { getToken, setTokens } from "@/lib/auth";
 
 export const Route = createFileRoute("/auth/invite")({
   component: InvitePage,
@@ -70,9 +70,7 @@ function InvitePage() {
         password,
         display_name: displayName,
       });
-      localStorage.setItem("sailbox_token", result.access_token);
-      localStorage.setItem("sailbox_refresh", result.refresh_token);
-      api.setToken(result.access_token);
+      setTokens(result.access_token, result.refresh_token);
       setStatus("done");
       setTimeout(() => navigate({ to: "/dashboard" }), 1500);
     } catch (err: any) {
@@ -84,7 +82,16 @@ function InvitePage() {
   async function handleAcceptExisting() {
     setStatus("accepting");
     try {
-      await api.post("/api/v1/team/invitations/accept", { token });
+      // Joining an organization revokes the tokens issued for the previous one,
+      // so the response carries replacements — swap them in before navigating or
+      // the next request lands on a dead session.
+      const result = await api.post<{
+        access_token?: string;
+        refresh_token?: string;
+      }>("/api/v1/team/invitations/accept", { token });
+      if (result?.access_token && result?.refresh_token) {
+        setTokens(result.access_token, result.refresh_token);
+      }
       setStatus("done");
       setTimeout(() => navigate({ to: "/dashboard" }), 1500);
     } catch (err: any) {

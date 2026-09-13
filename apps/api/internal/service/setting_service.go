@@ -203,7 +203,7 @@ func (s *SettingService) SaveSMTPConfig(ctx context.Context, cfg *SMTPConfig) er
 	}
 
 	// If password is the masked placeholder, keep existing password
-	if cfg.Password == "••••••••" {
+	if cfg.Password == model.RedactedValue {
 		existing, err := s.GetSMTPConfig(ctx)
 		if err == nil && existing.Password != "" {
 			cfg.Password = existing.Password

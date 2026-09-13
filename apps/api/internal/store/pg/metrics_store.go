@@ -17,7 +17,7 @@ type metricsStoreImpl struct {
 	alerts    *alertStore
 }
 
-func NewMetricsStore(db *bun.DB) store.MetricsStore {
+func NewMetricsStore(db bun.IDB) store.MetricsStore {
 	return &metricsStoreImpl{
 		snapshots: &snapshotStore{db: db},
 		events:    &eventStore{db: db},
@@ -31,7 +31,7 @@ func (s *metricsStoreImpl) Alerts() store.MetricAlertStore       { return s.aler
 
 // ── Snapshots ───────────────────────────────────────────────────
 
-type snapshotStore struct{ db *bun.DB }
+type snapshotStore struct{ db bun.IDB }
 
 func (s *snapshotStore) InsertBatch(ctx context.Context, snapshots []model.MetricSnapshot) error {
 	if len(snapshots) == 0 {
@@ -75,7 +75,7 @@ func (s *snapshotStore) DeleteOlderThan(ctx context.Context, before time.Time) (
 
 // ── Events ──────────────────────────────────────────────────────
 
-type eventStore struct{ db *bun.DB }
+type eventStore struct{ db bun.IDB }
 
 func (s *eventStore) UpsertBatch(ctx context.Context, events []model.MetricEvent) error {
 	if len(events) == 0 {
@@ -150,7 +150,7 @@ func (s *eventStore) DeleteOlderThan(ctx context.Context, before time.Time) (int
 
 // ── Alerts ──────────────────────────────────────────────────────
 
-type alertStore struct{ db *bun.DB }
+type alertStore struct{ db bun.IDB }
 
 func (s *alertStore) Insert(ctx context.Context, alert *model.MetricAlert) error {
 	_, err := s.db.NewInsert().Model(alert).Exec(ctx)

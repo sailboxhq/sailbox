@@ -60,6 +60,26 @@ export const Route = createFileRoute("/_dashboard/projects_/$id/")({
   component: ProjectDetailPage,
 });
 
+// Form shapes shared by the create dialog and its field components. A single
+// declaration is what stops the dialog's props from drifting away from the
+// state it is handed — dbForm had lost database_name, appForm git_provider_id.
+type AppForm = {
+  name: string;
+  source_type: string;
+  docker_image: string;
+  git_repo: string;
+  git_branch: string;
+  git_provider_id?: string;
+};
+
+type DbForm = {
+  name: string;
+  database_name: string;
+  engine: string;
+  version: string;
+  storage_size: string;
+};
+
 function ProjectDetailPage() {
   const { id: projectId } = Route.useParams();
   const navigate = useNavigate();
@@ -83,14 +103,14 @@ function ProjectDetailPage() {
   const [showDeleteProject, setShowDeleteProject] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ServiceItem | null>(null);
   const [serviceType, setServiceType] = useState<"app" | "database">("app");
-  const [appForm, setAppForm] = useState({
+  const [appForm, setAppForm] = useState<AppForm>({
     name: "",
     source_type: "image",
     docker_image: "",
     git_repo: "",
     git_branch: "main",
   });
-  const [dbForm, setDbForm] = useState({
+  const [dbForm, setDbForm] = useState<DbForm>({
     name: "",
     database_name: "",
     engine: "postgres",
@@ -366,7 +386,7 @@ function ServiceRow({
               size="icon"
               variant="ghost"
               className="h-8 w-8"
-              onClick={() => deploy.mutate()}
+              onClick={() => deploy.mutate(undefined)}
               disabled={deploy.isPending}
             >
               <Rocket className="h-3.5 w-3.5" />
@@ -529,16 +549,10 @@ function CreateServiceDialog({
   onOpenChange: (v: boolean) => void;
   serviceType: "app" | "database";
   onServiceTypeChange: (v: "app" | "database") => void;
-  appForm: {
-    name: string;
-    source_type: string;
-    docker_image: string;
-    git_repo: string;
-    git_branch: string;
-  };
-  onAppFormChange: (v: typeof appForm) => void;
-  dbForm: { name: string; engine: string; version: string; storage_size: string };
-  onDbFormChange: (v: typeof dbForm) => void;
+  appForm: AppForm;
+  onAppFormChange: (v: AppForm) => void;
+  dbForm: DbForm;
+  onDbFormChange: (v: DbForm) => void;
   creating: boolean;
   onSubmit: (e: React.FormEvent) => void;
 }) {
@@ -598,11 +612,11 @@ function ImageSourceFields({
   onChange,
   registries,
 }: {
-  form: { docker_image: string; [key: string]: string };
-  onChange: (v: typeof form) => void;
+  form: AppForm;
+  onChange: (v: AppForm) => void;
   registries: SharedResource[];
 }) {
-  const update = (field: string, value: string) => onChange({ ...form, [field]: value });
+  const update = (field: keyof AppForm, value: string) => onChange({ ...form, [field]: value });
   const [selectedRegistry, setSelectedRegistry] = useState("dockerhub");
 
   const handleRegistryChange = (registryId: string) => {
@@ -667,8 +681,8 @@ function GitSourceFields({
   onChange,
   gitProviders,
 }: {
-  form: { git_repo: string; git_branch: string; [key: string]: string };
-  onChange: (v: typeof form) => void;
+  form: AppForm;
+  onChange: (v: AppForm) => void;
   gitProviders: { id: string; name: string; provider: string }[];
 }) {
   const [selectedProviderId, setSelectedProviderId] = useState("");
@@ -694,7 +708,7 @@ function GitSourceFields({
     }
   }
 
-  function update(field: string, value: string) {
+  function update(field: keyof AppForm, value: string) {
     onChange({ ...form, [field]: value });
   }
 
@@ -812,20 +826,8 @@ function GitSourceFields({
   );
 }
 
-function AppFormFields({
-  form,
-  onChange,
-}: {
-  form: {
-    name: string;
-    source_type: string;
-    docker_image: string;
-    git_repo: string;
-    git_branch: string;
-  };
-  onChange: (v: typeof form) => void;
-}) {
-  const update = (field: string, value: string) => onChange({ ...form, [field]: value });
+function AppFormFields({ form, onChange }: { form: AppForm; onChange: (v: AppForm) => void }) {
+  const update = (field: keyof AppForm, value: string) => onChange({ ...form, [field]: value });
 
   // Fetch git providers and registries from shared resources
   const { data: gitProviders } = useResources("git_provider");
@@ -864,20 +866,8 @@ function AppFormFields({
   );
 }
 
-function DbFormFields({
-  form,
-  onChange,
-}: {
-  form: {
-    name: string;
-    database_name: string;
-    engine: string;
-    version: string;
-    storage_size: string;
-  };
-  onChange: (v: typeof form) => void;
-}) {
-  const update = (field: string, value: string) => onChange({ ...form, [field]: value });
+function DbFormFields({ form, onChange }: { form: DbForm; onChange: (v: DbForm) => void }) {
+  const update = (field: keyof DbForm, value: string) => onChange({ ...form, [field]: value });
   const { data: rawVersions, isLoading: versionsLoading } = useDatabaseVersions(form.engine);
   const versions = rawVersions ?? [];
 

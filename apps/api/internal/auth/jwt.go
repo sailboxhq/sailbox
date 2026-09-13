@@ -19,6 +19,9 @@ type Claims struct {
 	UserID uuid.UUID `json:"uid"`
 	OrgID  uuid.UUID `json:"oid"`
 	Role   string    `json:"role"`
+	// TokenVersion lets the auth middleware reject an access token that was
+	// superseded by a password change, role change or account removal.
+	TokenVersion int `json:"tv"`
 }
 
 // RefreshClaims represents claims in a refresh token.
@@ -54,6 +57,11 @@ type TokenPair struct {
 func (m *JWTManager) GenerateTokenPair(userID, orgID uuid.UUID, role string, tokenVersion ...int) (*TokenPair, error) {
 	now := time.Now()
 
+	tv := 0
+	if len(tokenVersion) > 0 {
+		tv = tokenVersion[0]
+	}
+
 	// Access token
 	accessClaims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -62,9 +70,10 @@ func (m *JWTManager) GenerateTokenPair(userID, orgID uuid.UUID, role string, tok
 			ExpiresAt: jwt.NewNumericDate(now.Add(m.tokenExpiry)),
 			Issuer:    "sailbox",
 		},
-		UserID: userID,
-		OrgID:  orgID,
-		Role:   role,
+		UserID:       userID,
+		OrgID:        orgID,
+		Role:         role,
+		TokenVersion: tv,
 	}
 
 	accessToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims).SignedString(m.secret)
@@ -73,10 +82,6 @@ func (m *JWTManager) GenerateTokenPair(userID, orgID uuid.UUID, role string, tok
 	}
 
 	// Refresh token (longer lived, includes token version for invalidation)
-	tv := 0
-	if len(tokenVersion) > 0 {
-		tv = tokenVersion[0]
-	}
 	refreshClaims := RefreshClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID.String(),
@@ -125,6 +130,9 @@ func (m *JWTManager) ValidateAccessToken(tokenString string) (*Claims, error) {
 // ValidateRefreshToken parses and validates a refresh token, returning the user ID and token version.
 func (m *JWTManager) ValidateRefreshToken(tokenString string) (uuid.UUID, int, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &RefreshClaims{}, func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, ErrInvalidToken
+		}
 		return m.secret, nil
 	})
 	if err != nil {

@@ -6,7 +6,6 @@ import {
   CartesianGrid,
   ResponsiveContainer,
   Tooltip,
-  type TooltipProps,
   XAxis,
   YAxis,
 } from "recharts";
@@ -60,18 +59,20 @@ function fmtTime(iso: string): string {
 
 // ── Chart tooltip ───────────────────────────────────────────────
 
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  usedKey,
-  limitKey,
-  formatter,
-}: TooltipProps<number, string> & {
+// Recharts injects active/payload/label into whatever element is passed as
+// <Tooltip content=...>. Its own TooltipProps omits those (they come from
+// context), so the contract is spelled out here instead of reaching into
+// recharts' internal generics.
+type ChartTooltipProps = {
+  active?: boolean;
+  label?: string | number;
+  payload?: Array<{ dataKey?: string | number; value?: number }>;
   usedKey: string;
   limitKey: string;
   formatter: (v: number) => string;
-}) {
+};
+
+function ChartTooltip({ active, payload, label, usedKey, limitKey, formatter }: ChartTooltipProps) {
   if (!active || !payload?.length) return null;
   const used = payload.find((p) => p.dataKey === usedKey)?.value ?? 0;
   const limit = payload.find((p) => p.dataKey === limitKey)?.value ?? 0;

@@ -69,7 +69,12 @@ const (
 )
 
 // Auth returns a middleware that validates JWT tokens.
-func Auth(jwtManager *auth.JWTManager) gin.HandlerFunc {
+//
+// A valid signature is necessary but not sufficient: the session validator also
+// confirms the account still exists and that the token was not superseded by a
+// password change, role change or removal. Without that check a token issued
+// before a revocation keeps working until it expires.
+func Auth(jwtManager *auth.JWTManager, sessions auth.SessionValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		if header == "" {
@@ -86,6 +91,11 @@ func Auth(jwtManager *auth.JWTManager) gin.HandlerFunc {
 		claims, err := jwtManager.ValidateAccessToken(parts[1])
 		if err != nil {
 			c.AbortWithStatusJSON(401, apierr.ErrUnauthorized.WithDetail(err.Error()))
+			return
+		}
+
+		if sessions != nil && !sessions.ValidateSession(c.Request.Context(), claims.UserID, claims.TokenVersion) {
+			c.AbortWithStatusJSON(401, apierr.ErrUnauthorized.WithDetail("session is no longer valid — please log in again"))
 			return
 		}
 
@@ -143,7 +153,7 @@ func RequireRole(roles ...string) gin.HandlerFunc {
 
 // WSAuth validates a JWT token from the query parameter "token".
 // Used for WebSocket/SSE routes where Authorization headers can't be set.
-func WSAuth(jwtManager *auth.JWTManager) gin.HandlerFunc {
+func WSAuth(jwtManager *auth.JWTManager, sessions auth.SessionValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.Query("token")
 		if token == "" {
@@ -163,6 +173,10 @@ func WSAuth(jwtManager *auth.JWTManager) gin.HandlerFunc {
 		claims, err := jwtManager.ValidateAccessToken(token)
 		if err != nil {
 			c.AbortWithStatusJSON(401, gin.H{"error": "invalid token"})
+			return
+		}
+		if sessions != nil && !sessions.ValidateSession(c.Request.Context(), claims.UserID, claims.TokenVersion) {
+			c.AbortWithStatusJSON(401, gin.H{"error": "session is no longer valid"})
 			return
 		}
 		c.Set(CtxUserID, claims.UserID)

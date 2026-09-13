@@ -11,7 +11,7 @@ import (
 )
 
 type databaseBackupStore struct {
-	db *bun.DB
+	db bun.IDB
 }
 
 func (s *databaseBackupStore) Create(ctx context.Context, backup *model.DatabaseBackup) error {

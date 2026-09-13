@@ -9,6 +9,16 @@ import (
 
 // Store aggregates all repository interfaces.
 type Store interface {
+	// RunInTx runs fn inside a single transaction. Stores obtained from the
+	// Store passed to fn all write through that transaction; returning an
+	// error rolls the whole unit of work back.
+	RunInTx(ctx context.Context, fn func(ctx context.Context, tx Store) error) error
+
+	// AcquireSetupLock takes a transaction-scoped Postgres advisory lock that
+	// serialises first-run setup across processes. It is released when the
+	// enclosing transaction ends, so it must be called inside RunInTx.
+	AcquireSetupLock(ctx context.Context) error
+
 	Organizations() OrganizationStore
 	Users() UserStore
 	Projects() ProjectStore
@@ -65,7 +75,11 @@ type UserStore interface {
 	Update(ctx context.Context, user *model.User) error
 	ListByOrg(ctx context.Context, orgID uuid.UUID, params ListParams) ([]model.User, int, error)
 	UpdateRole(ctx context.Context, userID uuid.UUID, role string) error
-	RemoveFromOrg(ctx context.Context, userID uuid.UUID) error
+	// Delete soft-deletes the user. users.org_id is NOT NULL, so a removed
+	// member is deactivated rather than detached from the org; the partial
+	// unique index on email lets the same address be invited again later.
+	Delete(ctx context.Context, userID uuid.UUID) error
+	IncrementTokenVersion(ctx context.Context, userID uuid.UUID) error
 	Count(ctx context.Context) (int, error)
 }
 
@@ -74,13 +88,20 @@ type ProjectStore interface {
 	Create(ctx context.Context, project *model.Project) error
 	Update(ctx context.Context, project *model.Project) error
 	Delete(ctx context.Context, id uuid.UUID) error
-	ListByOrg(ctx context.Context, orgID uuid.UUID, params ListParams) ([]model.Project, int, error)
+	// ListByOrg lists an org's projects. projectIDs, when non-nil, narrows the
+	// result to those projects (callers restricted by explicit grants).
+	ListByOrg(ctx context.Context, orgID uuid.UUID, params ListParams, projectIDs []uuid.UUID) ([]model.Project, int, error)
 }
 
 // AppListFilter provides optional filters for global app queries.
 type AppListFilter struct {
-	Search string // name contains
-	Status string // exact status match
+	Search string    // name contains
+	Status string    // exact status match
+	OrgID  uuid.UUID // restrict to projects owned by this org (required for cross-app listings)
+	// ProjectIDs restricts the listing to these projects. Nil means no
+	// restriction; it is set for callers who hold explicit project grants, so a
+	// cross-project listing cannot hand them resources they may not touch.
+	ProjectIDs []uuid.UUID
 }
 
 type ApplicationStore interface {
@@ -91,11 +112,15 @@ type ApplicationStore interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByProject(ctx context.Context, projectID uuid.UUID, params ListParams) ([]model.Application, int, error)
 	ListAll(ctx context.Context, params ListParams, filter AppListFilter) ([]model.Application, int, error)
+	DeleteByProject(ctx context.Context, projectID uuid.UUID) error
 }
 
 // DeploymentListFilter provides optional filters for global deployment queries.
 type DeploymentListFilter struct {
-	Status string // optional status filter (queued, building, deploying, success, failed, cancelled)
+	Status string    // optional status filter (queued, building, deploying, success, failed, cancelled)
+	OrgID  uuid.UUID // restrict to projects owned by this org; zero value means no scoping (internal callers)
+	// ProjectIDs restricts the listing to these projects; nil means no restriction.
+	ProjectIDs []uuid.UUID
 }
 
 type DeploymentStore interface {
@@ -114,6 +139,11 @@ type DomainStore interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByApp(ctx context.Context, appID uuid.UUID) ([]model.Domain, error)
 	GetByHost(ctx context.Context, host string) (*model.Domain, error)
+	// DeleteByApp soft-deletes every domain of an app. Soft deletes do not fire
+	// the ON DELETE CASCADE, so children must be removed explicitly or they
+	// outlive their parent and keep holding the host's unique index.
+	DeleteByApp(ctx context.Context, appID uuid.UUID) error
+	DeleteByProject(ctx context.Context, projectID uuid.UUID) error
 }
 
 type ManagedDatabaseStore interface {
@@ -122,6 +152,7 @@ type ManagedDatabaseStore interface {
 	Update(ctx context.Context, db *model.ManagedDatabase) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByProject(ctx context.Context, projectID uuid.UUID, params ListParams) ([]model.ManagedDatabase, int, error)
+	DeleteByProject(ctx context.Context, projectID uuid.UUID) error
 	FindByExternalPort(ctx context.Context, port int32) (*model.ManagedDatabase, error)
 	ListExternalPorts(ctx context.Context) ([]model.ExternalPortInfo, error)
 }
@@ -162,6 +193,7 @@ type CronJobStore interface {
 	Update(ctx context.Context, cj *model.CronJob) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByProject(ctx context.Context, projectID uuid.UUID, params ListParams) ([]model.CronJob, int, error)
+	DeleteByProject(ctx context.Context, projectID uuid.UUID) error
 }
 
 type CronJobRunStore interface {
@@ -183,11 +215,17 @@ type ProjectMemberStore interface {
 	Delete(ctx context.Context, projectID, userID uuid.UUID) error
 	ListByProject(ctx context.Context, projectID uuid.UUID) ([]model.ProjectMember, error)
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]model.ProjectMember, error)
+	// ListByUserInOrg returns only the grants pointing at projects owned by
+	// orgID. A user who moved organizations keeps rows for the old one, and
+	// treating those as authoritative locks them out of the new org entirely.
+	ListByUserInOrg(ctx context.Context, userID, orgID uuid.UUID) ([]model.ProjectMember, error)
+	DeleteByUser(ctx context.Context, userID uuid.UUID) error
 	GetByProjectAndUser(ctx context.Context, projectID, userID uuid.UUID) (*model.ProjectMember, error)
 }
 
 type InvitationStore interface {
 	Create(ctx context.Context, inv *model.Invitation) error
+	GetByID(ctx context.Context, id uuid.UUID) (*model.Invitation, error)
 	GetByToken(ctx context.Context, token string) (*model.Invitation, error)
 	ListByOrg(ctx context.Context, orgID uuid.UUID) ([]model.Invitation, error)
 	Delete(ctx context.Context, id uuid.UUID) error

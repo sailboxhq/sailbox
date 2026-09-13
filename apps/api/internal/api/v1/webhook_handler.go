@@ -3,6 +3,7 @@ package v1
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -37,17 +38,6 @@ func (h *WebhookHandler) GitHub(c *gin.Context) {
 		return
 	}
 
-	// Only handle push events
-	event := c.GetHeader("X-GitHub-Event")
-	if event == "ping" {
-		c.JSON(200, gin.H{"message": "pong"})
-		return
-	}
-	if event != "push" {
-		c.JSON(200, gin.H{"message": "ignored event: " + event})
-		return
-	}
-
 	// Read raw body for HMAC verification
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 10<<20)) // 10MB limit
 	if err != nil {
@@ -62,19 +52,41 @@ func (h *WebhookHandler) GitHub(c *gin.Context) {
 		return
 	}
 
-	if !app.AutoDeploy {
-		c.JSON(200, gin.H{"message": "auto-deploy disabled"})
+	// Verify the HMAC signature before anything else acts on the request. Both
+	// halves are mandatory: an unsigned request must be rejected, otherwise
+	// anyone who learns the app ID can drive this endpoint by simply omitting
+	// the signature header.
+	if app.WebhookSecret == "" {
+		h.logger.Warn("webhook rejected: no secret configured", slog.String("app", app.Name))
+		c.JSON(401, gin.H{"error": "webhook secret not configured — re-enable the webhook to generate one"})
+		return
+	}
+	signature := c.GetHeader("X-Hub-Signature-256")
+	if signature == "" {
+		h.logger.Warn("webhook rejected: missing signature", slog.String("app", app.Name))
+		c.JSON(401, gin.H{"error": "missing signature"})
+		return
+	}
+	if !verifyGitHubSignature(app.WebhookSecret, body, signature) {
+		h.logger.Warn("webhook signature mismatch", slog.String("app", app.Name))
+		c.JSON(401, gin.H{"error": "invalid signature"})
 		return
 	}
 
-	// Verify HMAC signature
-	signature := c.GetHeader("X-Hub-Signature-256")
-	if app.WebhookSecret != "" && signature != "" {
-		if !verifyGitHubSignature(app.WebhookSecret, body, signature) {
-			h.logger.Warn("webhook signature mismatch", slog.String("app", app.Name))
-			c.JSON(401, gin.H{"error": "invalid signature"})
-			return
-		}
+	// Only handle push events
+	event := c.GetHeader("X-GitHub-Event")
+	if event == "ping" {
+		c.JSON(200, gin.H{"message": "pong"})
+		return
+	}
+	if event != "push" {
+		c.JSON(200, gin.H{"message": "ignored event: " + event})
+		return
+	}
+
+	if !app.AutoDeploy {
+		c.JSON(200, gin.H{"message": "auto-deploy disabled"})
+		return
 	}
 
 	// Parse push payload
@@ -178,15 +190,22 @@ func (h *WebhookHandler) GitLab(c *gin.Context) {
 		return
 	}
 
-	if !app.AutoDeploy {
-		c.JSON(200, gin.H{"message": "auto-deploy disabled"})
+	// GitLab uses the X-Gitlab-Token header for verification, checked before
+	// anything else acts on the request. As with GitHub, an unconfigured secret
+	// is a rejection rather than a free pass.
+	if app.WebhookSecret == "" {
+		h.logger.Warn("webhook rejected: no secret configured", slog.String("app", app.Name))
+		c.JSON(401, gin.H{"error": "webhook secret not configured — re-enable the webhook to generate one"})
+		return
+	}
+	token := c.GetHeader("X-Gitlab-Token")
+	if subtle.ConstantTimeCompare([]byte(token), []byte(app.WebhookSecret)) != 1 {
+		c.JSON(401, gin.H{"error": "invalid token"})
 		return
 	}
 
-	// GitLab uses X-Gitlab-Token header for verification
-	token := c.GetHeader("X-Gitlab-Token")
-	if app.WebhookSecret != "" && token != app.WebhookSecret {
-		c.JSON(401, gin.H{"error": "invalid token"})
+	if !app.AutoDeploy {
+		c.JSON(200, gin.H{"message": "auto-deploy disabled"})
 		return
 	}
 

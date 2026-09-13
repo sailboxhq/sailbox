@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
+	"github.com/google/uuid"
 	"github.com/uptrace/bun/migrate"
 
 	"github.com/sailboxhq/sailbox/apps/api/internal/api/ws"
@@ -77,7 +78,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	migrator := migrate.NewMigrator(store.DB(), migrations.Migrations)
+	// WithMarkAppliedOnSuccess: by default Bun records a migration as applied
+	// *before* running it, so a migration that fails part-way is never retried —
+	// the next start skips it and the schema stays half-migrated. Recording only
+	// on success makes a failed migration re-run instead.
+	migrator := migrate.NewMigrator(store.DB(), migrations.Migrations, migrate.WithMarkAppliedOnSuccess(true))
 	if err := migrator.Init(ctx); err != nil {
 		logger.Error("failed to init migrations", slog.Any("error", err))
 		store.DB().ExecContext(ctx, "SELECT pg_advisory_unlock(1)") //nolint:errcheck
@@ -130,7 +135,19 @@ func main() {
 	metricsStore := pg.NewMetricsStore(store.DB())
 
 	// Services
-	services := service.NewContainer(store, metricsStore, orch, jwtManager, logger, cfg.Database.URL, cfg.Auth.SetupSecret)
+	// Access tokens carry a token version; this validator rejects one whose
+	// account has since been removed or had its sessions revoked. Services call
+	// Invalidate on revocation, so the cache is only a performance shortcut —
+	// it never delays a revocation.
+	sessions := auth.NewCachedSessionValidator(func(ctx context.Context, userID uuid.UUID) (int, bool) {
+		user, err := store.Users().GetByID(ctx, userID)
+		if err != nil {
+			return 0, false
+		}
+		return user.TokenVersion, true
+	}, 10*time.Second)
+
+	services := service.NewContainer(store, metricsStore, orch, jwtManager, logger, cfg.Database.URL, cfg.Auth.SetupSecret, sessions)
 
 	// Start background metrics collector
 	services.Metrics.Start()
@@ -148,6 +165,7 @@ func main() {
 	router := server.NewRouter(&server.RouterDeps{
 		Services:    services,
 		JWTManager:  jwtManager,
+		Sessions:    sessions,
 		Orch:        orch,
 		Store:       store,
 		SSEBroker:   sseBroker,

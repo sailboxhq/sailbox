@@ -42,7 +42,7 @@ function AppsPage() {
   const projectMap = new Map(projects?.map((p) => [p.id, p.name]) ?? []);
 
   // Debounce search input
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(
     () => () => {
       clearTimeout(debounceRef.current);

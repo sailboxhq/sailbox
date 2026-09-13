@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/sailboxhq/sailbox/apps/api/internal/model"
 	"github.com/sailboxhq/sailbox/apps/api/internal/orchestrator"
 	"github.com/sailboxhq/sailbox/apps/api/internal/store"
@@ -125,6 +127,66 @@ func (s *DatabaseService) Create(ctx context.Context, input CreateDatabaseInput)
 	s.logger.Info("managed database created",
 		slog.String("name", db.Name),
 		slog.String("engine", string(db.Engine)),
+	)
+	return db, nil
+}
+
+// UpdateResourcesInput carries the fields of a running database that can be
+// changed in place. Engine version is not among them (a major upgrade needs
+// pg_upgrade or its equivalent) and neither is storage size (PVC expansion is
+// its own operation on the cluster page).
+type UpdateResourcesInput struct {
+	CPULimit *string `json:"cpu_limit"`
+	MemLimit *string `json:"mem_limit"`
+}
+
+// UpdateResources changes a running database's CPU/memory limits and rolls the
+// StatefulSet so they take effect. The database row is only updated once the
+// cluster accepted the change, so the two cannot drift apart.
+func (s *DatabaseService) UpdateResources(ctx context.Context, id uuid.UUID, input UpdateResourcesInput) (*model.ManagedDatabase, error) {
+	db, err := s.store.ManagedDatabases().GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if input.CPULimit == nil && input.MemLimit == nil {
+		return db, nil
+	}
+	if input.CPULimit != nil {
+		if _, err := resource.ParseQuantity(*input.CPULimit); err != nil {
+			return nil, fmt.Errorf("invalid cpu limit %q: use a Kubernetes quantity such as 500m or 2", *input.CPULimit)
+		}
+		db.CPULimit = *input.CPULimit
+	}
+	if input.MemLimit != nil {
+		if _, err := resource.ParseQuantity(*input.MemLimit); err != nil {
+			return nil, fmt.Errorf("invalid memory limit %q: use a Kubernetes quantity such as 512Mi or 2Gi", *input.MemLimit)
+		}
+		db.MemLimit = *input.MemLimit
+	}
+
+	// Record the desired state before touching the cluster. Applying first and
+	// persisting second leaves the two diverged whenever the write fails — the
+	// cluster already rolled with the new limits while the row kept the old
+	// ones, and because a partial update fills the untouched field from that
+	// row, the next change would push the stale counterpart back out.
+	if err := s.store.ManagedDatabases().Update(ctx, db); err != nil {
+		return nil, err
+	}
+	if err := s.orch.UpdateDatabaseResources(ctx, db); err != nil {
+		// The row now holds what was asked for, so retrying this call re-applies
+		// it; nothing is lost, but say plainly that it is not in effect yet.
+		s.logger.Error("database resource limits saved but not applied",
+			slog.String("name", db.Name),
+			slog.Any("error", err),
+		)
+		return nil, fmt.Errorf("limits saved but not applied to the cluster — retry to apply them: %w", err)
+	}
+
+	s.logger.Info("database resources updated",
+		slog.String("name", db.Name),
+		slog.String("cpu", db.CPULimit),
+		slog.String("memory", db.MemLimit),
 	)
 	return db, nil
 }
